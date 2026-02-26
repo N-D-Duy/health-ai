@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+ollama
+chromadb
+sentence-transformers
+datasets
+pandas
+python-dotenv
+requests
