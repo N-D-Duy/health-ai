@@ -12,20 +12,37 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src.chat import ChatMessage, chat_once
-from src.config import OLLAMA_HOST
-from src.retrieval import query_chromadb
+from src.config import OLLAMA_HOST, RERANK_ENABLED, HYBRID_SEARCH_ENABLED
+from src.retrieval import query_chromadb, _get_bm25, _get_reranker
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm-up: load embedding model + ChromaDB khi khởi động để request đầu không bị chậm (Loading weights).
+    # Warm-up: load embedding model + ChromaDB khi khởi động để request đầu không bị chậm.
     try:
         await asyncio.to_thread(query_chromadb, "sức khỏe", 1)
         logger.info("RAG warm-up done (embedding + ChromaDB)")
     except Exception as e:
         logger.warning("RAG warm-up failed: %s", e)
+
+    # Pre-build BM25 index (load toàn bộ corpus vào RAM 1 lần).
+    if HYBRID_SEARCH_ENABLED:
+        try:
+            await asyncio.to_thread(_get_bm25)
+            logger.info("BM25 index built")
+        except Exception as e:
+            logger.warning("BM25 warm-up failed: %s", e)
+
+    # Pre-load CrossEncoder reranker weights.
+    if RERANK_ENABLED:
+        try:
+            await asyncio.to_thread(_get_reranker)
+            logger.info("Reranker loaded")
+        except Exception as e:
+            logger.warning("Reranker warm-up failed: %s", e)
+
     yield
 
 

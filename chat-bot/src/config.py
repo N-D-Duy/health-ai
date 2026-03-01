@@ -20,6 +20,35 @@ MAX_HISTORY_MESSAGES = int(env("MAX_HISTORY_MESSAGES", "12"))
 # Cosine distance: nhỏ = giống. Nếu khoảng cách tốt nhất > ngưỡng thì coi như không có ngữ cảnh y tế (từ chối strict). 0.75 = siết chặt.
 RAG_DISTANCE_OFF_TOPIC_THRESHOLD = float(env("RAG_DISTANCE_OFF_TOPIC_THRESHOLD", "0.75"))
 
+# ── Reranking ──────────────────────────────────────────────────────────────────
+# CrossEncoder model dùng để score lại chunks sau khi retrieve.
+RERANKER_MODEL_NAME = env("RERANKER_MODEL_NAME", "BAAI/bge-reranker-base")
+# Số chunks đưa vào prompt sau khi rerank (top-N tốt nhất).
+RERANK_TOP_N = int(env("RERANK_TOP_N", "3"))
+# Số candidates lấy từ mỗi nguồn (semantic/BM25) trước khi rerank (pool rộng hơn TOP_K).
+RETRIEVE_CANDIDATES = int(env("RETRIEVE_CANDIDATES", "10"))
+# Tắt/bật reranking (true = bật, false = dùng TOP_K từ kết quả gốc).
+RERANK_ENABLED = env("RERANK_ENABLED", "true").lower() in ("1", "true", "yes")
+
+# ── Hybrid search (Semantic + BM25 + RRF) ─────────────────────────────────────
+# Tắt/bật hybrid search; nếu false chỉ dùng semantic (ChromaDB).
+HYBRID_SEARCH_ENABLED = env("HYBRID_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
+
+# ── Query Expansion ───────────────────────────────────────────────────────────
+# Tắt/bật query expansion bằng LLM.
+QUERY_EXPANSION_ENABLED = env("QUERY_EXPANSION_ENABLED", "true").lower() in ("1", "true", "yes")
+# Số câu hỏi mở rộng sinh thêm (không tính câu gốc).
+QUERY_EXPANSION_N = int(env("QUERY_EXPANSION_N", "2"))
+# Prompt yêu cầu LLM sinh các cách hỏi khác nhau cho cùng nội dung.
+QUERY_EXPANSION_PROMPT_VI = env(
+    "QUERY_EXPANSION_PROMPT_VI",
+    (
+        "Hãy viết {n} cách diễn đạt khác nhau cho câu hỏi sau (tiếng Việt, ngắn gọn, "
+        "không giải thích, mỗi cách trên một dòng, không đánh số, không gạch đầu dòng):\n"
+        "Câu hỏi gốc: {query}"
+    ),
+)
+
 RAG_CONTEXT_TITLE = env("RAG_CONTEXT_TITLE", "Context từ cơ sở tri thức")
 
 # Câu trả lời cố định khi câu hỏi không thuộc lĩnh vực y tế. Chỉ trả về đúng câu này, không thêm gì.

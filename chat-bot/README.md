@@ -21,13 +21,22 @@ Chatbot tư vấn sức khỏe tiếng Việt, chạy hoàn toàn **offline** (l
                         │      → KHÔNG  ──► Từ chối cố định            │
                         │      → CÓ     ──►  [2]                       │
                         │                                              │
-                        │  [2] RAG – ChromaDB + BAAI/bge-m3            │
-                        │      Tìm top-K đoạn văn liên quan             │
-                        │      cosine distance ≤ 0.75?                 │
-                        │      → CÓ  context  ──► đưa vào system prompt│
-                        │      → KHÔNG context ──► dùng kiến thức chung│
+                        │  [2] Query Expansion (LLM)                   │
+                        │      Sinh thêm 2 cách hỏi khác nhau          │
+                        │      [query_0, query_1, query_2]             │
                         │                                              │
-                        │  [3] LLM Chat – Ollama (Qwen2.5 7B)          │
+                        │  [3] Hybrid Search × mỗi query              │
+                        │      Semantic (ChromaDB/bge-m3) top-10       │
+                        │         +                                    │
+                        │      BM25 (rank-bm25) top-10                 │
+                        │      → Reciprocal Rank Fusion                │
+                        │      → merge 3 lists → pool ~30 candidates  │
+                        │                                              │
+                        │  [4] Reranking (CrossEncoder bge-reranker)   │
+                        │      Score lại toàn bộ pool                  │
+                        │      → top-3 chunk liên quan nhất            │
+                        │                                              │
+                        │  [5] LLM Chat – Ollama (Qwen2.5 7B)          │
                         │      Sinh câu trả lời + history session      │
                         └──────────────────────────────────────────────┘
 ```
@@ -39,9 +48,11 @@ Chatbot tư vấn sức khỏe tiếng Việt, chạy hoàn toàn **offline** (l
 | Thành phần | Công nghệ | Vai trò |
 |---|---|---|
 | **API Server** | FastAPI + Uvicorn | Nhận request HTTP, quản lý session lịch sử hội thoại |
-| **LLM (Inference)** | Ollama · Qwen2.5 7B | Classifier chủ đề + sinh câu trả lời |
+| **LLM (Inference)** | Ollama · Qwen2.5 7B | Classifier chủ đề + query expansion + sinh câu trả lời |
 | **Embedding Model** | `BAAI/bge-m3` (HuggingFace) | Encode câu hỏi và tài liệu thành vector |
 | **Vector Database** | ChromaDB (persistent, local) | Lưu và tìm kiếm đoạn văn y tế bằng cosine similarity |
+| **BM25 Index** | `rank-bm25` (in-RAM) | Keyword search song song với semantic, tốt cho tên bệnh/thuốc |
+| **Reranker** | `BAAI/bge-reranker-base` (CrossEncoder) | Score lại pool candidates, chọn top-3 thực sự liên quan |
 | **Dữ liệu** | MedQuAD (dịch tiếng Việt) | Bộ câu hỏi–đáp y tế được index sẵn |
 
 ---
@@ -85,27 +96,51 @@ Prompt gửi LLM:
 
 > Đây là cơ chế chính để lọc off-topic. Không dùng keyword cứng nên không bị bỏ sót.
 
-### 4. Bước 2 — RAG (Retrieval-Augmented Generation)
+### 4. Bước 2 — Query Expansion
 
-Nếu câu hỏi là y tế, `retrieval.py` thực hiện semantic search trong ChromaDB:
+Câu hỏi ngắn ("đau đầu là sao") có embedding nghèo — không match tốt với đoạn văn y tế dài trong ChromaDB. `_expand_query()` yêu cầu LLM sinh thêm **2 cách hỏi khác** cho cùng nội dung:
 
-1. **Encode câu hỏi** bằng `BAAI/bge-m3` thành vector 1024 chiều
-2. **Tìm top-K = 5** đoạn văn gần nhất theo **cosine distance** trong collection `medquad_vi`
-3. **Kiểm tra ngưỡng**: nếu `best_distance ≤ 0.75` → có context liên quan; ngược lại → không có context
+```
+Query gốc:  "đau đầu là sao"
+Expansion 1: "Nguyên nhân gây ra đau đầu là gì?"
+Expansion 2: "Triệu chứng đau đầu và cách xử lý"
+```
 
-> Cosine distance: càng nhỏ càng giống. `0.75` là ngưỡng "đủ gần để tin dùng".
+Tất cả 3 query sẽ được đưa vào bước tiếp theo.
 
-### 5. Bước 3 — Sinh câu trả lời (LLM Chat)
+### 5. Bước 3 — Hybrid Search + Reciprocal Rank Fusion
+
+Mỗi query được tìm kiếm song song qua **2 kênh**:
+
+| Kênh | Cách hoạt động | Điểm mạnh |
+|---|---|---|
+| **Semantic** (ChromaDB + bge-m3) | Cosine similarity trên vector embedding | Câu hỏi mơ hồ, paraphrase |
+| **BM25** (rank-bm25, in-RAM) | Keyword matching (Okapi BM25) | Tên bệnh, tên thuốc, ký hiệu y tế cụ thể |
+
+Kết quả từ tất cả các list (3 queries × 2 kênh = 6 lists) được gộp bằng **Reciprocal Rank Fusion**:
+$$\text{RRF}(d) = \sum_{\text{list}} \frac{1}{k + \text{rank}(d)}$$
+Chunk xuất hiện cao trong nhiều list → score RRF cao → pool ~30 candidates chất lượng.
+
+### 6. Bước 4 — Reranking
+
+`rerank_chunks()` chạy **CrossEncoder** (`BAAI/bge-reranker-base`) trên toàn bộ pool:
+- Không dùng embedding riêng biệt — CrossEncoder nhìn đồng thời `(query, chunk)` nên hiểu ngữ cảnh sâu hơn bi-encoder
+- Score lại từng cặp, chọn **top-3 chunk** có score cao nhất đưa vào system prompt
+
+```
+Pool ~30 chunks  →  CrossEncoder score  →  top-3
+```
+
+### 7. Bước 5 — Sinh câu trả lời (LLM Chat)
 
 `chat.py` xây dựng `messages` cho Ollama:
 
 ```
 [system]   SYSTEM_GUARDRAIL_VI
-           + (nếu có context) các đoạn RAG trích dẫn
+           + (nếu có context) top-3 chunks sau rerank
            + (nếu không có context) hướng dẫn dùng kiến thức chung
 
-[user]     [lịch sử hội thoại gần nhất]
-[assistant]
+[user/assistant]  lịch sử hội thoại gần nhất
 
 [user]     câu hỏi hiện tại
 ```
@@ -203,8 +238,15 @@ Kiểm tra trạng thái server và kết nối Ollama.
 | `EMBED_MODEL_NAME` | `BAAI/bge-m3` | Model embedding HuggingFace |
 | `CHROMA_PATH` | `chroma_db` | Thư mục lưu ChromaDB |
 | `CHROMA_COLLECTION` | `medquad_vi` | Tên collection |
-| `TOP_K` | `5` | Số đoạn văn RAG tìm mỗi lượt |
-| `RAG_DISTANCE_OFF_TOPIC_THRESHOLD` | `0.75` | Ngưỡng cosine distance để coi context là liên quan |
+| `TOP_K` | `5` | Số chunks semantic search (fallback khi rerank tắt) |
+| `RETRIEVE_CANDIDATES` | `10` | Số candidates lấy từ mỗi nguồn trước khi rerank |
+| `RERANK_ENABLED` | `true` | Bật/tắt CrossEncoder reranking |
+| `RERANKER_MODEL_NAME` | `BAAI/bge-reranker-base` | Model CrossEncoder |
+| `RERANK_TOP_N` | `3` | Số chunks đưa vào prompt sau rerank |
+| `HYBRID_SEARCH_ENABLED` | `true` | Bật/tắt BM25 hybrid search |
+| `QUERY_EXPANSION_ENABLED` | `true` | Bật/tắt query expansion bằng LLM |
+| `QUERY_EXPANSION_N` | `2` | Số câu hỏi mở rộng sinh thêm |
+| `RAG_DISTANCE_OFF_TOPIC_THRESHOLD` | `0.75` | Ngưỡng cosine distance (chỉ dùng khi rerank tắt) |
 | `MAX_HISTORY_MESSAGES` | `12` | Số tin nhắn lịch sử giữ per session |
 | `HF_TOKEN` | _(trống)_ | HuggingFace API token |
 
@@ -214,12 +256,12 @@ Kiểm tra trạng thái server và kết nối Ollama.
 
 ```
 chat-bot/
-├── main.py                  # FastAPI app, endpoints, session management
+├── main.py                  # FastAPI app, endpoints, session management, warm-up
 ├── Modelfile                # Định nghĩa Ollama model (base: qwen2.5:7b)
 ├── requirements.txt
 ├── src/
-│   ├── chat.py              # Logic chính: classifier → RAG → LLM
-│   ├── retrieval.py         # ChromaDB query, embedding
+│   ├── chat.py              # Logic chính: classifier → expand → hybrid → rerank → LLM
+│   ├── retrieval.py         # ChromaDB semantic, BM25, RRF, CrossEncoder reranker
 │   └── config.py            # Tất cả hằng số & env vars
 ├── scripts/
 │   ├── build_medquad_vi.py  # Tải và dịch dataset MedQuAD
