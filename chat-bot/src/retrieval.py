@@ -4,6 +4,13 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+# Đảm bảo HF token được set TRƯỚC KHI import bất kỳ thư viện huggingface nào,
+# tránh warning "unauthenticated requests" khi khởi động.
+_hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
+if _hf_token:
+    os.environ.setdefault("HF_TOKEN", _hf_token)
+    os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", _hf_token)
+
 import chromadb
 from chromadb.utils import embedding_functions
 
@@ -19,11 +26,6 @@ class RetrievedChunk:
 
 
 def get_collection():
-    # Đảm bảo HF token được truyền cho sentence-transformers / HF Hub
-    hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
-    if hf_token and not os.getenv("HUGGING_FACE_HUB_TOKEN"):
-        os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
-
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=EMBED_MODEL_NAME
