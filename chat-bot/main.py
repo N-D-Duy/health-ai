@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import threading
+from contextlib import asynccontextmanager
 from typing import Any
 
 import requests
@@ -10,9 +13,23 @@ from pydantic import BaseModel, Field
 
 from src.chat import ChatMessage, chat_once
 from src.config import OLLAMA_HOST
+from src.retrieval import query_chromadb
+
+logger = logging.getLogger(__name__)
 
 
-app = FastAPI(title="chat-bot-yte", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm-up: load embedding model + ChromaDB khi khởi động để request đầu không bị chậm (Loading weights).
+    try:
+        await asyncio.to_thread(query_chromadb, "sức khỏe", 1)
+        logger.info("RAG warm-up done (embedding + ChromaDB)")
+    except Exception as e:
+        logger.warning("RAG warm-up failed: %s", e)
+    yield
+
+
+app = FastAPI(title="chat-bot-yte", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

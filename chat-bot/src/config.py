@@ -17,18 +17,44 @@ EMBED_MODEL_NAME = env("EMBED_MODEL_NAME", "BAAI/bge-m3")
 
 TOP_K = int(env("TOP_K", "5"))
 MAX_HISTORY_MESSAGES = int(env("MAX_HISTORY_MESSAGES", "12"))
+# Cosine distance: nhỏ = giống. Nếu khoảng cách tốt nhất > ngưỡng thì coi như không có ngữ cảnh y tế (từ chối strict). 0.75 = siết chặt.
+RAG_DISTANCE_OFF_TOPIC_THRESHOLD = float(env("RAG_DISTANCE_OFF_TOPIC_THRESHOLD", "0.75"))
 
 RAG_CONTEXT_TITLE = env("RAG_CONTEXT_TITLE", "Context từ cơ sở tri thức")
+
+# Câu trả lời cố định khi câu hỏi không thuộc lĩnh vực y tế. Chỉ trả về đúng câu này, không thêm gì.
+REFUSAL_OFF_TOPIC_VI = env(
+    "REFUSAL_OFF_TOPIC_VI",
+    "Câu hỏi này không thuộc lĩnh vực y tế. Tôi chỉ hỗ trợ thông tin về sức khỏe. Bạn hãy đặt câu hỏi liên quan sức khỏe hoặc bệnh lý.",
+)
+
+# Prompt phân loại: LLM tự xác định câu hỏi có thuộc y tế/sức khỏe không (thay keyword cứng).
+MEDICAL_CLASSIFIER_PROMPT_VI = env(
+    "MEDICAL_CLASSIFIER_PROMPT_VI",
+    (
+        "Nhiệm vụ: Xác định xem câu hỏi sau có thuộc lĩnh vực y tế, sức khỏe, bệnh lý, "
+        "triệu chứng, thuốc, dinh dưỡng, vệ sinh cá nhân, chăm sóc cơ thể hay y học không.\n"
+        "Chỉ trả lời đúng một từ: CÓ hoặc KHÔNG. Không giải thích thêm.\n"
+        "Câu hỏi: {query}"
+    ),
+)
+
+# Những điều model KHÔNG được làm khi câu hỏi không về y tế (để ghi rõ trong system prompt).
+OFF_TOPIC_FORBIDDEN_VI = (
+    "Khi câu hỏi KHÔNG về y tế/sức khỏe, CẤM: giải thích nội dung câu hỏi; "
+    "gợi ý nguồn khác; thêm bất kỳ thông tin nào ngoài câu từ chối. "
+    "Chỉ được trả lời đúng một câu từ chối theo mẫu quy định."
+)
 
 SYSTEM_GUARDRAIL_VI = env(
     "SYSTEM_GUARDRAIL_VI",
     "\n".join(
         [
             "Bạn là trợ lý thông tin y tế cơ bản (không thay thế bác sĩ).",
-            "Chỉ trả lời các câu hỏi liên quan sức khỏe/y tế ở mức thông tin chung.",
+            "Phạm vi: Chỉ trả lời câu hỏi về sức khỏe, y tế, bệnh lý (triệu chứng, nguyên nhân, cách phòng ngừa, v.v.).",
+            OFF_TOPIC_FORBIDDEN_VI,
             "Không đưa chẩn đoán chắc chắn, không kê đơn/đưa liều dùng thuốc.",
-            "Luôn nhắc: “Thông tin chỉ mang tính tham khảo; bạn nên gặp bác sĩ để được chẩn đoán và điều trị.”",
-            "Nếu câu hỏi không thuộc y tế hoặc yêu cầu nội dung nguy hiểm/phi pháp, hãy từ chối lịch sự và đề nghị hỏi về vấn đề sức khỏe.",
+            "Với câu hỏi ĐÚNG chủ đề y tế: luôn nhắc “Thông tin chỉ mang tính tham khảo; bạn nên gặp bác sĩ để được chẩn đoán và điều trị.”",
             "Trả lời tiếng Việt, rõ ràng, ngắn gọn, ưu tiên gạch đầu dòng.",
         ]
     ),
