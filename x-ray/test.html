@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Axe Analytics – Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0f0f0f; color: #e0e0e0; padding: 24px; }
+    h1 { font-size: 1.2rem; color: #7dd3fc; margin-bottom: 20px; letter-spacing: 1px; }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; }
+    .card h2 { font-size: 0.75rem; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+    label { display: block; font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; margin-top: 10px; }
+    input[type="text"] {
+      width: 100%; background: #111; border: 1px solid #333; border-radius: 4px;
+      color: #e0e0e0; font-family: monospace; font-size: 0.8rem; padding: 6px 8px;
+    }
+    input[type="file"] { font-size: 0.8rem; color: #94a3b8; margin-top: 8px; }
+
+    #preview { margin-top: 12px; max-width: 100%; max-height: 320px; border-radius: 4px; display: none; }
+
+    button {
+      margin-top: 16px; width: 100%; background: #1d4ed8; color: #fff; border: none;
+      border-radius: 4px; font-family: monospace; font-size: 0.85rem; padding: 10px;
+      cursor: pointer; transition: background 0.15s;
+    }
+    button:hover { background: #2563eb; }
+    button:disabled { background: #374151; cursor: not-allowed; }
+
+    #log-container { grid-column: 1 / -1; }
+    #log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    #log-header h2 { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+    #clear-btn {
+      background: none; border: 1px solid #333; border-radius: 4px; color: #94a3b8;
+      font-size: 0.7rem; padding: 2px 10px; cursor: pointer; width: auto; margin: 0;
+    }
+    #clear-btn:hover { border-color: #555; color: #ccc; }
+
+    #log {
+      background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 6px; padding: 14px;
+      font-size: 0.78rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+      min-height: 120px; max-height: 520px; overflow-y: auto; color: #a3e635;
+    }
+    .log-info     { color: #7dd3fc; }
+    .log-ok       { color: #a3e635; }
+    .log-error    { color: #f87171; }
+    .log-dim      { color: #4b5563; }
+    .log-response { color: #e2e8f0; }
+  </style>
+</head>
+<body>
+  <h1>▸ Axe Analytics — Test Console</h1>
+
+  <div class="grid">
+    <!-- Config -->
+    <div class="card">
+      <h2>Server Config</h2>
+      <label>API Base URL</label>
+      <input type="text" id="base-url" value="http://localhost:8000" />
+      <p style="font-size:0.7rem;color:#4b5563;margin-top:8px;">
+        Endpoint: POST {base_url}/analyze<br/>
+        Health:   GET  {base_url}/health
+      </p>
+      <button id="health-btn" style="margin-top:12px;background:#065f46;">CHECK HEALTH</button>
+    </div>
+
+    <!-- Upload -->
+    <div class="card">
+      <h2>Image</h2>
+      <input type="file" id="file-input" accept=".png,.jpg,.jpeg" />
+      <img id="preview" alt="preview" />
+      <button id="analyze-btn">ANALYZE</button>
+    </div>
+
+    <!-- Log -->
+    <div id="log-container" class="card">
+      <div id="log-header">
+        <h2>Log</h2>
+        <button id="clear-btn">clear</button>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    const fileInput  = document.getElementById('file-input');
+    const preview    = document.getElementById('preview');
+    const analyzeBtn = document.getElementById('analyze-btn');
+    const healthBtn  = document.getElementById('health-btn');
+    const logEl      = document.getElementById('log');
+    const clearBtn   = document.getElementById('clear-btn');
+
+    let currentFile = null;
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function log(msg, cls = '') {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = msg + '\n';
+      logEl.appendChild(span);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(`[${cls || 'log'}]`, msg);
+    }
+    function logDivider() { log('─'.repeat(64), 'log-dim'); }
+    function baseUrl() { return document.getElementById('base-url').value.trim().replace(/\/$/, ''); }
+
+    clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
+
+    // ── Image preview ──────────────────────────────────────────────────────────
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      currentFile = file;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        preview.src = e.target.result;
+        preview.style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+      log(`[file] ${file.name}  (${(file.size / 1024).toFixed(1)} KB, ${file.type})`, 'log-info');
+    });
+
+    // ── Health check ───────────────────────────────────────────────────────────
+    healthBtn.addEventListener('click', async () => {
+      const url = `${baseUrl()}/health`;
+      log(`[→] GET ${url}`, 'log-info');
+      try {
+        const t0  = Date.now();
+        const res = await fetch(url);
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+        const data = await res.json();
+        log(`[←] HTTP ${res.status}  (${elapsed}s)`, res.ok ? 'log-ok' : 'log-error');
+        log(JSON.stringify(data, null, 2), 'log-dim');
+        console.log('[health]', data);
+      } catch (err) {
+        log(`[exception] ${err.message}`, 'log-error');
+      }
+    });
+
+    // ── Analyze ────────────────────────────────────────────────────────────────
+    analyzeBtn.addEventListener('click', async () => {
+      if (!currentFile) {
+        log('[error] Upload an X-ray image first.', 'log-error');
+        return;
+      }
+
+      const url = `${baseUrl()}/analyze`;
+      analyzeBtn.disabled = true;
+      analyzeBtn.textContent = 'Analyzing…';
+      logDivider();
+
+      // ── Request ──
+      const form = new FormData();
+      form.append('file', currentFile);
+
+      log(`[→] POST ${url}`, 'log-info');
+      log(`[req] Content-Type: multipart/form-data`, 'log-dim');
+      log(`[req] file: ${currentFile.name}  (${currentFile.type}, ${(currentFile.size/1024).toFixed(1)} KB)`, 'log-dim');
+      console.log('[request] FormData file:', currentFile);
+
+      try {
+        const t0  = Date.now();
+        const res = await fetch(url, { method: 'POST', body: form });
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+
+        log(`[←] HTTP ${res.status} ${res.statusText}  (${elapsed}s)`, res.ok ? 'log-ok' : 'log-error');
+
+        // ── Response ──
+        const data = await res.json();
+        console.log('[response]', data);
+
+        if (!res.ok) {
+          // FastAPI error shape: { "detail": "..." }
+          const detail = typeof data.detail === 'string'
+            ? data.detail
+            : JSON.stringify(data.detail ?? data, null, 2);
+          log(`[error] ${detail}`, 'log-error');
+        } else {
+          // Success: { analysis, model, finish_reason, usage }
+          log(`[model] ${data.model ?? 'n/a'}`, 'log-dim');
+          log(`[finish_reason] ${data.finish_reason ?? 'n/a'}`, 'log-dim');
+          if (data.usage) {
+            const u = data.usage;
+            log(`[usage] prompt=${u.prompt_token_count}  candidates=${u.candidates_token_count}  total=${u.total_token_count}`, 'log-dim');
+          }
+          logDivider();
+          log(data.analysis ?? '', 'log-response');
+        }
+      } catch (err) {
+        log(`[exception] ${err.message}`, 'log-error');
+        console.error(err);
+      } finally {
+        analyzeBtn.disabled = false;
+        analyzeBtn.textContent = 'ANALYZE';
+        logDivider();
+      }
+    });
+  </script>
+</body>
+</html>

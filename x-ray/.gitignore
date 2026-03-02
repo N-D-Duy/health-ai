@@ -1,0 +1,15 @@
+### Python venv & bytecode
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+### Env & secrets
+.env
+*.env.local
+
+### Logs / misc
+*.log
+.DS_Store
+*.swp
+*.swo
