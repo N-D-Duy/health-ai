@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>STT Bot – Test Console</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f0f0f; color: #e5e7eb; font-family: monospace; padding: 20px; }
+    h1 { color: #7dd3fc; margin-bottom: 4px; font-size: 1.1rem; }
+    .subtitle { color: #4b5563; font-size: 0.72rem; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: 380px 1fr; gap: 14px; }
+    .card { background: #161616; border: 1px solid #262626; border-radius: 8px; padding: 14px; }
+    .card h2 { color: #94a3b8; text-transform: uppercase; font-size: 0.72rem; margin-bottom: 10px; letter-spacing: 1px; }
+    input, textarea { width: 100%; background: #111; border: 1px solid #333; color: #e5e7eb; border-radius: 4px; padding: 7px; font-size: 0.78rem; font-family: monospace; }
+    textarea { min-height: 90px; resize: vertical; }
+    label { color: #94a3b8; display: block; font-size: 0.72rem; margin: 8px 0 3px; }
+
+    /* Step buttons */
+    .step { margin-top: 10px; }
+    .step-label { font-size: 0.68rem; color: #4b5563; margin-bottom: 3px; }
+    .step-label span { color: #7dd3fc; }
+    .btn {
+      width: 100%; border: none; border-radius: 4px; padding: 9px 8px;
+      color: #fff; cursor: pointer; font-family: monospace; font-size: 0.8rem;
+      transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn.active-step { box-shadow: 0 0 0 2px #7dd3fc55; }
+    .b-gray  { background: #374151; }
+    .b-blue  { background: #1d4ed8; }
+    .b-teal  { background: #0f766e; }
+    .b-violet{ background: #6d28d9; }
+    .b-rose  { background: #9f1239; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+    /* Session badge */
+    #session-badge {
+      margin-top: 8px; padding: 5px 8px; background: #111; border: 1px solid #1f2937;
+      border-radius: 4px; font-size: 0.72rem; color: #4b5563; word-break: break-all;
+    }
+    #session-badge.has-id { border-color: #064e3b; color: #6ee7b7; }
+
+    /* Status bar */
+    #status-bar {
+      display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px;
+    }
+    .status-chip {
+      font-size: 0.65rem; padding: 2px 8px; border-radius: 20px;
+      background: #1f2937; color: #4b5563; border: 1px solid #1f2937;
+    }
+    .status-chip.done { background: #064e3b22; border-color: #064e3b; color: #6ee7b7; }
+    .status-chip.active { background: #1d4ed822; border-color: #3b82f6; color: #93c5fd; }
+
+    /* Log */
+    #log { background: #0a0a0a; border: 1px solid #222; border-radius: 6px; padding: 10px;
+           min-height: 120px; max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: 0.75rem; }
+    .ok  { color: #a3e635; } .err { color: #f87171; }
+    .info{ color: #7dd3fc; } .dim { color: #6b7280; } .warn { color: #fbbf24; }
+
+    pre { background: #0a0a0a; border: 1px solid #222; border-radius: 6px; padding: 10px;
+          white-space: pre-wrap; word-break: break-word; font-size: 0.75rem;
+          max-height: 360px; overflow: auto; }
+    #log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    #log-header h2 { margin: 0; }
+    #btn-clear { background: none; border: 1px solid #333; color: #6b7280; border-radius: 4px;
+                 padding: 2px 10px; font-size: 0.7rem; cursor: pointer; width: auto; }
+  </style>
+</head>
+<body>
+  <h1>STT-BOT – Test Console</h1>
+  <p class="subtitle">Chạy theo đúng thứ tự bước 1 → 7</p>
+
+  <div class="grid">
+    <!-- LEFT: Controls -->
+    <div class="card">
+      <h2>Config</h2>
+      <label>Base URL</label>
+      <input id="base" value="http://localhost:8010" />
+
+      <div class="row2" style="margin-top:10px;">
+        <div>
+          <label>Patient ID</label>
+          <input id="patient" value="P001" />
+        </div>
+        <div>
+          <label>Encounter ID</label>
+          <input id="encounter" value="E001" />
+        </div>
+      </div>
+      <label>Doctor ID</label>
+      <input id="doctor" value="D001" />
+
+      <div id="status-bar">
+        <span class="status-chip active" id="chip-session">1. session</span>
+        <span class="status-chip" id="chip-audio">2. audio</span>
+        <span class="status-chip" id="chip-stt">3. STT</span>
+        <span class="status-chip" id="chip-nlp">4. analyze</span>
+        <span class="status-chip" id="chip-review">5. review</span>
+        <span class="status-chip" id="chip-final">6. finalize</span>
+      </div>
+
+      <!-- Step 0: health -->
+      <div class="step">
+        <div class="step-label"><span>0.</span> Kiểm tra server</div>
+        <button class="btn b-gray" id="btn-health">GET /health</button>
+      </div>
+
+      <!-- Step 1: start session -->
+      <div class="step">
+        <div class="step-label"><span>1.</span> Tạo session mới</div>
+        <button class="btn b-blue active-step" id="btn-start">▶ Start Session</button>
+      </div>
+
+      <div id="session-badge">session_id: (chưa tạo)</div>
+
+      <!-- Step 2: upload audio -->
+      <div class="step">
+        <div class="step-label"><span>2.</span> Chọn file audio (.mp3 / .wav / .m4a …)</div>
+        <input id="audio" type="file" accept="audio/*" style="margin-bottom:6px;" />
+        <button class="btn b-teal" id="btn-upload" disabled>⬆ Upload Audio</button>
+      </div>
+
+      <!-- Step 3: transcribe -->
+      <div class="step">
+        <div class="step-label"><span>3.</span> Chạy Whisper STT (tiếng Việt)</div>
+        <button class="btn b-teal" id="btn-transcribe" disabled>◉ Transcribe</button>
+      </div>
+
+      <!-- Step 4: analyze -->
+      <div class="step">
+        <div class="step-label"><span>4.</span> Phân tích lâm sàng + sinh SOAP</div>
+        <button class="btn b-violet" id="btn-analyze" disabled>⚡ Analyze + SOAP</button>
+      </div>
+
+      <!-- Step 5: review -->
+      <div class="step">
+        <div class="step-label"><span>5.</span> Bác sĩ chỉnh sửa SOAP rồi lưu review</div>
+        <button class="btn b-rose" id="btn-review" disabled>✍ Save Review</button>
+      </div>
+
+      <!-- Step 6: finalize -->
+      <div class="step">
+        <div class="step-label"><span>6.</span> Xác nhận và lưu chính thức</div>
+        <button class="btn b-rose" id="btn-finalize" disabled>✔ Finalize</button>
+      </div>
+
+      <div class="step">
+        <div class="step-label" style="color:#4b5563;">Tiện ích</div>
+        <div class="row2">
+          <button class="btn b-gray" id="btn-stop">Stop Session</button>
+          <button class="btn b-gray" id="btn-get">Get Session</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Results -->
+    <div class="card">
+      <h2>Result</h2>
+      <pre id="result">(kết quả API hiển thị ở đây)</pre>
+
+      <h2 style="margin-top:14px;">SOAP – Doctor Edit</h2>
+      <label>Subjective</label>
+      <textarea id="subjective" placeholder="Triệu chứng chủ quan..."></textarea>
+      <label>Objective</label>
+      <textarea id="objective" placeholder="Khám lâm sàng, sinh hiệu..."></textarea>
+      <label>Assessment</label>
+      <textarea id="assessment" placeholder="Nhận định / chẩn đoán sơ bộ..."></textarea>
+      <label>Plan</label>
+      <textarea id="plan" placeholder="Hướng xử trí, đơn thuốc..."></textarea>
+
+      <label>Review Comment</label>
+      <input id="comment" value="Reviewed by doctor" />
+
+      <div id="log-header" style="margin-top:14px;">
+        <h2>Log</h2>
+        <button id="btn-clear">clear</button>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+<script>
+const resultEl = document.getElementById('result');
+const logEl    = document.getElementById('log');
+let latestExtraction = null;
+let sessionId = '';
+
+function base() { return document.getElementById('base').value.trim().replace(/\/$/, ''); }
+function doctor() { return document.getElementById('doctor').value.trim(); }
+
+// ── State machine ──────────────────────────────────────────────
+const steps = {
+  'btn-upload':    'chip-audio',
+  'btn-transcribe':'chip-stt',
+  'btn-analyze':   'chip-nlp',
+  'btn-review':    'chip-review',
+  'btn-finalize':  'chip-final',
+};
+
+function enableBtn(id) {
+  const el = document.getElementById(id);
+  if (el) { el.disabled = false; el.classList.add('active-step'); }
+}
+function markChipDone(chipId) {
+  const el = document.getElementById(chipId);
+  if (el) { el.classList.remove('active'); el.classList.add('done'); }
+}
+function setSessionId(id) {
+  sessionId = id || '';
+  const badge = document.getElementById('session-badge');
+  badge.textContent = sessionId ? `session_id: ${sessionId}` : 'session_id: (chưa tạo)';
+  badge.className = sessionId ? 'has-id' : '';
+  if (sessionId) {
+    enableBtn('btn-upload');
+    markChipDone('chip-session');
+    document.getElementById('chip-audio').classList.add('active');
+  }
+}
+
+// ── Log ────────────────────────────────────────────────────────
+function log(msg, cls = 'info') {
+  const s = document.createElement('span');
+  s.className = cls;
+  s.textContent = msg + '\n';
+  logEl.appendChild(s);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function logSep() { log('─'.repeat(60), 'dim'); }
+function show(data) { resultEl.textContent = JSON.stringify(data, null, 2); }
+document.getElementById('btn-clear').onclick = () => { logEl.innerHTML = ''; };
+
+// ── Guard: must have session ───────────────────────────────────
+function requireSession() {
+  if (!sessionId) {
+    log('[!] Chưa có session. Bấm ▶ Start Session trước.', 'warn');
+    return false;
+  }
+  return true;
+}
+
+// ── Fetch helper ───────────────────────────────────────────────
+async function jfetch(url, options = {}) {
+  log(`[${options.method || 'GET'}] ${url}`, 'info');
+  try {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      log(`HTTP ${res.status}: ${data.detail || JSON.stringify(data)}`, 'err');
+      show(data);
+      return null;
+    }
+    log(`HTTP ${res.status} OK`, 'ok');
+    show(data);
+    return data;
+  } catch (e) {
+    log(`[exception] ${e.message}`, 'err');
+    return null;
+  }
+}
+
+function fillSoap(soap) {
+  document.getElementById('subjective').value = soap?.subjective || '';
+  document.getElementById('objective').value  = soap?.objective  || '';
+  document.getElementById('assessment').value = soap?.assessment || '';
+  document.getElementById('plan').value       = soap?.plan       || '';
+}
+
+// ── Step handlers ──────────────────────────────────────────────
+document.getElementById('btn-health').onclick = async () => {
+  logSep();
+  await jfetch(`${base()}/health`);
+};
+
+document.getElementById('btn-start').onclick = async () => {
+  logSep();
+  const payload = {
+    patient_id:   document.getElementById('patient').value.trim(),
+    encounter_id: document.getElementById('encounter').value.trim(),
+    doctor_id:    doctor(),
+  };
+  const data = await jfetch(`${base()}/sessions/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (data?.session?.session_id) {
+    setSessionId(data.session.session_id);
+    log(`[session] ${data.session.session_id}`, 'ok');
+  }
+};
+
+document.getElementById('btn-stop').onclick = async () => {
+  if (!requireSession()) return;
+  await jfetch(`${base()}/sessions/${sessionId}/stop`, { method: 'POST' });
+};
+
+document.getElementById('btn-get').onclick = async () => {
+  if (!requireSession()) return;
+  await jfetch(`${base()}/sessions/${sessionId}`);
+};
+
+document.getElementById('btn-upload').onclick = async () => {
+  if (!requireSession()) return;
+  const f = document.getElementById('audio').files[0];
+  if (!f) { log('[!] Chưa chọn file audio.', 'warn'); return; }
+  log(`[file] ${f.name} (${(f.size/1024).toFixed(1)} KB)`, 'dim');
+  logSep();
+  const fd = new FormData();
+  fd.append('file', f);
+  const data = await jfetch(`${base()}/sessions/${sessionId}/audio`, { method: 'POST', body: fd });
+  if (data) {
+    markChipDone('chip-audio');
+    enableBtn('btn-transcribe');
+    document.getElementById('chip-stt').classList.add('active');
+  }
+};
+
+document.getElementById('btn-transcribe').onclick = async () => {
+  if (!requireSession()) return;
+  logSep();
+  log('[transcribe] Đang chạy Whisper... (có thể mất vài phút)', 'dim');
+  const data = await jfetch(`${base()}/sessions/${sessionId}/transcribe`, { method: 'POST' });
+  if (data?.transcript?.full_text) {
+    log(`[transcript] ${data.transcript.segments?.length ?? 0} segments`, 'ok');
+    markChipDone('chip-stt');
+    enableBtn('btn-analyze');
+    document.getElementById('chip-nlp').classList.add('active');
+  }
+};
+
+document.getElementById('btn-analyze').onclick = async () => {
+  if (!requireSession()) return;
+  logSep();
+  log('[analyze] Đang gọi Ollama qwen2.5:7b... (có thể mất 30-60s)', 'dim');
+  const data = await jfetch(`${base()}/sessions/${sessionId}/analyze`, { method: 'POST' });
+  if (data) {
+    latestExtraction = data.extraction;
+    fillSoap(data.soap_note);
+    log('[soap] Đã điền SOAP draft bên phải, hãy sửa nếu cần.', 'ok');
+    markChipDone('chip-nlp');
+    enableBtn('btn-review');
+    document.getElementById('chip-review').classList.add('active');
+  }
+};
+
+document.getElementById('btn-review').onclick = async () => {
+  if (!requireSession()) return;
+  if (!latestExtraction) { log('[!] Chạy Analyze trước.', 'warn'); return; }
+  logSep();
+  const payload = {
+    doctor_id: doctor(),
+    comment: document.getElementById('comment').value,
+    extraction: latestExtraction,
+    soap_note: {
+      subjective:   document.getElementById('subjective').value,
+      objective:    document.getElementById('objective').value,
+      assessment:   document.getElementById('assessment').value,
+      plan:         document.getElementById('plan').value,
+      generated_at: new Date().toISOString(),
+      model_name:   'doctor-edited',
+    },
+  };
+  const data = await jfetch(`${base()}/sessions/${sessionId}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (data) {
+    markChipDone('chip-review');
+    enableBtn('btn-finalize');
+    document.getElementById('chip-final').classList.add('active');
+  }
+};
+
+document.getElementById('btn-finalize').onclick = async () => {
+  if (!requireSession()) return;
+  logSep();
+  const data = await jfetch(`${base()}/sessions/${sessionId}/finalize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ doctor_id: doctor(), note: 'Prototype finalize' }),
+  });
+  if (data) {
+    markChipDone('chip-final');
+    log('[done] Session đã được finalize.', 'ok');
+    document.getElementById('btn-finalize').disabled = true;
+  }
+};
+</script>
+</body>
+</html>

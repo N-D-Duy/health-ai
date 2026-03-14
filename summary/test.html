@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Summary Extractor – Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0f0f0f; color: #e0e0e0; padding: 24px; }
+    h1 { font-size: 1.2rem; color: #7dd3fc; margin-bottom: 20px; letter-spacing: 1px; }
+
+    .grid { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+
+    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; }
+    .card h2 { font-size: 0.75rem; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+    label { display: block; font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; margin-top: 10px; }
+    input[type="text"] {
+      width: 100%; background: #111; border: 1px solid #333; border-radius: 4px;
+      color: #e0e0e0; font-family: monospace; font-size: 0.8rem; padding: 6px 8px;
+    }
+
+    #file-list { margin-top: 10px; font-size: 0.75rem; color: #94a3b8; line-height: 1.8; }
+    #file-list span { display: block; }
+    #file-list span::before { content: "📄 "; }
+
+    .btn {
+      margin-top: 12px; width: 100%; border: none; border-radius: 4px;
+      font-family: monospace; font-size: 0.82rem; padding: 9px;
+      cursor: pointer; transition: background 0.15s; color: #fff;
+    }
+    .btn:disabled { background: #374151 !important; cursor: not-allowed; }
+    .btn-primary { background: #1d4ed8; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-green { background: #065f46; margin-top: 8px; }
+    .btn-green:hover { background: #047857; }
+
+    /* Result tabs */
+    .tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+    .tab {
+      background: #111; border: 1px solid #333; border-radius: 4px;
+      color: #94a3b8; font-family: monospace; font-size: 0.72rem;
+      padding: 3px 10px; cursor: pointer;
+    }
+    .tab.active { border-color: #7dd3fc; color: #7dd3fc; }
+
+    .result-panel { display: none; }
+    .result-panel.active { display: block; }
+
+    #log-container { grid-column: 1 / -1; }
+    #log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    #log-header h2 { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+    #clear-btn {
+      background: none; border: 1px solid #333; border-radius: 4px;
+      color: #94a3b8; font-size: 0.7rem; padding: 2px 10px; cursor: pointer; width: auto; margin: 0;
+    }
+    #clear-btn:hover { border-color: #555; color: #ccc; }
+
+    #log {
+      background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 6px;
+      padding: 14px; font-size: 0.78rem; line-height: 1.6;
+      white-space: pre-wrap; word-break: break-word;
+      min-height: 80px; max-height: 220px; overflow-y: auto; color: #a3e635;
+    }
+    .log-info  { color: #7dd3fc; }
+    .log-ok    { color: #a3e635; }
+    .log-error { color: #f87171; }
+    .log-dim   { color: #4b5563; }
+
+    /* Result viewer */
+    #result-area { margin-top: 0; }
+    .doc-block {
+      background: #111; border: 1px solid #2a2a2a; border-radius: 6px;
+      padding: 12px; margin-bottom: 12px;
+    }
+    .doc-title { color: #7dd3fc; font-size: 0.8rem; margin-bottom: 8px; }
+
+    .section-label { font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin: 10px 0 4px; }
+
+    .page-text {
+      background: #0a0a0a; border: 1px solid #1f2937; border-radius: 4px;
+      padding: 8px; font-size: 0.75rem; color: #d1d5db; white-space: pre-wrap;
+      max-height: 180px; overflow-y: auto;
+    }
+
+    table.kv-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    table.kv-table td { padding: 3px 8px; border-bottom: 1px solid #1f2937; }
+    table.kv-table td:first-child { color: #94a3b8; width: 40%; }
+    table.kv-table td:last-child { color: #e2e8f0; }
+
+    table.data-table { width: 100%; border-collapse: collapse; font-size: 0.73rem; }
+    table.data-table th, table.data-table td {
+      padding: 3px 8px; border: 1px solid #1f2937; text-align: left;
+    }
+    table.data-table th { background: #1f2937; color: #94a3b8; }
+    table.data-table td { color: #d1d5db; }
+
+    .badge {
+      display: inline-block; background: #1f2937; border-radius: 3px;
+      font-size: 0.65rem; padding: 1px 6px; color: #94a3b8; margin-left: 6px;
+    }
+  </style>
+</head>
+<body>
+  <h1>▸ Summary Extractor — Test Console</h1>
+
+  <div class="grid">
+    <!-- Config + Upload -->
+    <div class="card">
+      <h2>Config</h2>
+      <label>API Base URL</label>
+      <input type="text" id="base-url" value="http://localhost:8000" />
+
+      <label style="margin-top:14px;">PDF Files</label>
+      <input type="file" id="file-input" accept=".pdf" multiple
+        style="font-size:0.8rem;color:#94a3b8;margin-top:6px;" />
+      <div id="file-list"></div>
+
+      <button class="btn btn-primary" id="extract-btn">EXTRACT</button>
+      <button class="btn btn-green" id="health-btn">CHECK HEALTH</button>
+    </div>
+
+    <!-- Result viewer -->
+    <div class="card">
+      <h2>Results <span id="result-count" class="badge" style="display:none;"></span></h2>
+      <div class="tabs" id="tabs"></div>
+      <div id="result-area"></div>
+    </div>
+
+    <!-- Log -->
+    <div id="log-container" class="card">
+      <div id="log-header">
+        <h2>Log</h2>
+        <button id="clear-btn">clear</button>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    const fileInput  = document.getElementById('file-input');
+    const fileList   = document.getElementById('file-list');
+    const extractBtn = document.getElementById('extract-btn');
+    const healthBtn  = document.getElementById('health-btn');
+    const logEl      = document.getElementById('log');
+    const clearBtn   = document.getElementById('clear-btn');
+    const tabsEl     = document.getElementById('tabs');
+    const resultArea = document.getElementById('result-area');
+    const resultCount = document.getElementById('result-count');
+
+    function baseUrl() { return document.getElementById('base-url').value.trim().replace(/\/$/, ''); }
+
+    // ── Log ────────────────────────────────────────────────────────────────────
+    function log(msg, cls = '') {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = msg + '\n';
+      logEl.appendChild(span);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(`[${cls || 'log'}]`, msg);
+    }
+    function logDiv() { log('─'.repeat(64), 'log-dim'); }
+    clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
+
+    // ── File picker ────────────────────────────────────────────────────────────
+    fileInput.addEventListener('change', () => {
+      fileList.innerHTML = '';
+      const files = [...fileInput.files];
+      files.forEach(f => {
+        const s = document.createElement('span');
+        s.textContent = `${f.name}  (${(f.size / 1024).toFixed(1)} KB)`;
+        fileList.appendChild(s);
+      });
+      log(`[file] ${files.length} file(s) đã chọn: ${files.map(f => f.name).join(', ')}`, 'log-info');
+    });
+
+    // ── Health ─────────────────────────────────────────────────────────────────
+    healthBtn.addEventListener('click', async () => {
+      const url = `${baseUrl()}/health`;
+      log(`[→] GET ${url}`, 'log-info');
+      try {
+        const t0 = Date.now();
+        const res = await fetch(url);
+        const data = await res.json();
+        log(`[←] HTTP ${res.status}  (${((Date.now()-t0)/1000).toFixed(2)}s)`, res.ok ? 'log-ok' : 'log-error');
+        log(JSON.stringify(data, null, 2), 'log-dim');
+      } catch (e) { log(`[exception] ${e.message}`, 'log-error'); }
+    });
+
+    // ── Extract ────────────────────────────────────────────────────────────────
+    extractBtn.addEventListener('click', async () => {
+      const files = [...fileInput.files];
+      if (!files.length) { log('[error] Chọn ít nhất 1 file PDF.', 'log-error'); return; }
+
+      extractBtn.disabled = true;
+      extractBtn.textContent = 'Extracting…';
+      tabsEl.innerHTML = '';
+      resultArea.innerHTML = '';
+      resultCount.style.display = 'none';
+      logDiv();
+
+      const form = new FormData();
+      files.forEach(f => form.append('files', f));
+
+      const url = `${baseUrl()}/extract`;
+      log(`[→] POST ${url}`, 'log-info');
+      log(`[req] ${files.length} file(s): ${files.map(f=>f.name).join(', ')}`, 'log-dim');
+
+      try {
+        const t0 = Date.now();
+        const res = await fetch(url, { method: 'POST', body: form });
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+        log(`[←] HTTP ${res.status} ${res.statusText}  (${elapsed}s)`, res.ok ? 'log-ok' : 'log-error');
+
+        const data = await res.json();
+        console.log('[response]', data);
+
+        if (!res.ok) {
+          const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data, null, 2);
+          log(`[error] ${detail}`, 'log-error');
+        } else {
+          const docs = data.documents || [];
+          log(`[✓] Extracted ${docs.length} document(s)`, 'log-ok');
+          docs.forEach(d => {
+            log(`    ${d.file}: ${d.page_count} trang, ${d.tables?.length ?? 0} bảng, ${Object.keys(d.key_value_pairs||{}).length} key-value pairs`, 'log-dim');
+          });
+          renderResults(docs);
+        }
+      } catch (e) {
+        log(`[exception] ${e.message}`, 'log-error');
+        console.error(e);
+      } finally {
+        extractBtn.disabled = false;
+        extractBtn.textContent = 'EXTRACT';
+        logDiv();
+      }
+    });
+
+    // ── Render results ─────────────────────────────────────────────────────────
+    function renderResults(docs) {
+      tabsEl.innerHTML = '';
+      resultArea.innerHTML = '';
+      resultCount.textContent = `${docs.length} doc`;
+      resultCount.style.display = 'inline-block';
+
+      docs.forEach((doc, idx) => {
+        // Tab
+        const tab = document.createElement('button');
+        tab.className = 'tab' + (idx === 0 ? ' active' : '');
+        tab.textContent = doc.file;
+        tab.dataset.idx = idx;
+        tab.addEventListener('click', () => {
+          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.result-panel').forEach(p => p.classList.remove('active'));
+          tab.classList.add('active');
+          document.getElementById(`panel-${idx}`).classList.add('active');
+        });
+        tabsEl.appendChild(tab);
+
+        // Panel
+        const panel = document.createElement('div');
+        panel.className = 'result-panel' + (idx === 0 ? ' active' : '');
+        panel.id = `panel-${idx}`;
+
+        let html = `<div class="doc-block">`;
+        html += `<div class="doc-title">📄 ${doc.file} <span class="badge">${doc.page_count} trang</span></div>`;
+
+        // Key-value pairs
+        const kvEntries = Object.entries(doc.key_value_pairs || {});
+        if (kvEntries.length) {
+          html += `<div class="section-label">Key-Value Pairs (${kvEntries.length})</div>`;
+          html += `<table class="kv-table">`;
+          kvEntries.forEach(([k, v]) => {
+            html += `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`;
+          });
+          html += `</table>`;
+        }
+
+        // Tables
+        if (doc.tables?.length) {
+          doc.tables.forEach((tbl, ti) => {
+            html += `<div class="section-label">Bảng ${ti + 1} (${tbl.row_count} × ${tbl.col_count})</div>`;
+            html += `<div style="overflow-x:auto"><table class="data-table">`;
+            tbl.rows.forEach((row, ri) => {
+              html += `<tr>`;
+              row.forEach(cell => {
+                const tag = ri === 0 ? 'th' : 'td';
+                html += `<${tag}>${esc(cell)}</${tag}>`;
+              });
+              html += `</tr>`;
+            });
+            html += `</table></div>`;
+          });
+        }
+
+        // Pages
+        if (doc.pages?.length) {
+          html += `<div class="section-label">Nội dung văn bản</div>`;
+          doc.pages.forEach((text, pi) => {
+            if (!text.trim()) return;
+            html += `<div style="margin-bottom:8px">`;
+            html += `<div style="font-size:0.68rem;color:#4b5563;margin-bottom:3px;">Trang ${pi + 1}</div>`;
+            html += `<div class="page-text">${esc(text)}</div>`;
+            html += `</div>`;
+          });
+        }
+
+        html += `</div>`;
+        panel.innerHTML = html;
+        resultArea.appendChild(panel);
+      });
+    }
+
+    function esc(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+  </script>
+</body>
+</html>

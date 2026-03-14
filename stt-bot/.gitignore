@@ -1,0 +1,19 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment files
+.env
+
+# Runtime data and generated artifacts
+data/uploads/
+data/store/sessions.json
+
+# Tooling / editor
+.DS_Store
+.idea/
+.vscode/

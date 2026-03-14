@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+pydantic
+requests
+ollama
+faster-whisper
+ffmpeg-python
+gTTS
+# CUDA libs for faster-whisper GPU acceleration (nếu máy có CUDA)
+# Bỏ comment dòng dưới nếu muốn dùng GPU mà bị lỗi libcublas
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

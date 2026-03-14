@@ -1,0 +1,6 @@
+azure-ai-documentintelligence
+azure-core
+python-dotenv
+fastapi
+uvicorn[standard]
+python-multipart
