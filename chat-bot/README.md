@@ -1,273 +1,359 @@
 # chat-bot-yte
 
-Chatbot tư vấn sức khỏe tiếng Việt, chạy hoàn toàn **offline** (local LLM + local vector DB). Kiến trúc RAG (Retrieval-Augmented Generation) kết hợp với bộ lọc chủ đề bằng LLM, đảm bảo bot chỉ trả lời đúng phạm vi y tế.
+Chatbot tư vấn sức khỏe tiếng Việt chạy local theo kiến trúc RAG (Retrieval-Augmented Generation). Mục tiêu là:
+- Chỉ trả lời trong phạm vi y tế/sức khỏe.
+- Tận dụng tri thức từ bộ dữ liệu MedQuAD đã index vào ChromaDB.
+- Vẫn hoạt động được offline ở tầng model suy luận (Ollama local).
+
+Tài liệu này viết theo hướng onboarding: người chưa biết gì về project vẫn có thể hiểu được thành phần nào đang chạy, vì sao dùng nó, dữ liệu đi như thế nào và API trả gì.
 
 ---
 
-## Kiến trúc tổng quan
+## 1. Project này giải bài toán gì?
 
+Trong hệ thống tư vấn y tế, nếu cho LLM trả lời trực tiếp thì dễ bị:
+- Hallucination (tự suy diễn sai).
+- Lệch chủ đề (người dùng hỏi ngoài y tế).
+- Câu trả lời không ổn định khi câu hỏi mơ hồ.
+
+`chat-bot` giải bài toán này bằng 3 lớp bảo vệ:
+- Lớp 1: LLM classifier xác định câu hỏi có thuộc y tế không.
+- Lớp 2: Retrieval + rerank để đưa context liên quan vào prompt.
+- Lớp 3: Guardrail + disclaimer bắt buộc trong câu trả lời.
+
+---
+
+## 2. Kiến trúc tổng quan
+
+```text
+Client
+  -> POST /chat
+FastAPI (main.py)
+  -> chat_once() (src/chat.py)
+     1) Medical classifier (Ollama)
+     2) Query expansion (Ollama)
+     3) Hybrid retrieval (Chroma semantic + BM25)
+     4) Reciprocal Rank Fusion (RRF)
+     5) Cross-encoder rerank
+     6) LLM answer generation (Ollama)
+  -> Return {response, session_id}
 ```
-                        ┌──────────────────────────────────────────────┐
-                        │                  FastAPI Server               │
-                        │               (main.py · port 8000)           │
-                        └──────────────────┬───────────────────────────┘
-                                           │ POST /chat
-                                           ▼
-                        ┌──────────────────────────────────────────────┐
-                        │               chat_once()  (chat.py)          │
-                        │                                              │
-                        │  [1] LLM Classifier                          │
-                        │      Câu hỏi có phải y tế không?             │
-                        │      → KHÔNG  ──► Từ chối cố định            │
-                        │      → CÓ     ──►  [2]                       │
-                        │                                              │
-                        │  [2] Query Expansion (LLM)                   │
-                        │      Sinh thêm 2 cách hỏi khác nhau          │
-                        │      [query_0, query_1, query_2]             │
-                        │                                              │
-                        │  [3] Hybrid Search × mỗi query              │
-                        │      Semantic (ChromaDB/bge-m3) top-10       │
-                        │         +                                    │
-                        │      BM25 (rank-bm25) top-10                 │
-                        │      → Reciprocal Rank Fusion                │
-                        │      → merge 3 lists → pool ~30 candidates  │
-                        │                                              │
-                        │  [4] Reranking (CrossEncoder bge-reranker)   │
-                        │      Score lại toàn bộ pool                  │
-                        │      → top-3 chunk liên quan nhất            │
-                        │                                              │
-                        │  [5] LLM Chat – Ollama (Qwen2.5 7B)          │
-                        │      Sinh câu trả lời + history session      │
-                        └──────────────────────────────────────────────┘
+
+Dữ liệu tri thức:
+```text
+MedQuAD (EN)
+  -> scripts/build_medquad_vi.py (lọc + dịch)
+  -> data/medquad_vi.csv
+  -> scripts/index_to_chromadb.py (chunk + embedding)
+  -> chroma_db/ (persistent local vector store)
 ```
 
 ---
 
-## Thành phần
+## 3. Thành phần được sử dụng, vai trò và lý do lựa chọn
 
-| Thành phần | Công nghệ | Vai trò |
-|---|---|---|
-| **API Server** | FastAPI + Uvicorn | Nhận request HTTP, quản lý session lịch sử hội thoại |
-| **LLM (Inference)** | Ollama · Qwen2.5 7B | Classifier chủ đề + query expansion + sinh câu trả lời |
-| **Embedding Model** | `BAAI/bge-m3` (HuggingFace) | Encode câu hỏi và tài liệu thành vector |
-| **Vector Database** | ChromaDB (persistent, local) | Lưu và tìm kiếm đoạn văn y tế bằng cosine similarity |
-| **BM25 Index** | `rank-bm25` (in-RAM) | Keyword search song song với semantic, tốt cho tên bệnh/thuốc |
-| **Reranker** | `BAAI/bge-reranker-base` (CrossEncoder) | Score lại pool candidates, chọn top-3 thực sự liên quan |
-| **Dữ liệu** | MedQuAD (dịch tiếng Việt) | Bộ câu hỏi–đáp y tế được index sẵn |
+### 3.1 API layer
+- Công nghệ: `FastAPI` + `uvicorn`
+- Vai trò:
+  - Cung cấp endpoint `GET /health`, `POST /chat`.
+  - Quản lý session history trong RAM theo `session_id`.
+  - Warm-up các thành phần nặng khi startup.
+- Lý do dùng:
+  - Nhẹ, dễ mở rộng REST API.
+  - Tích hợp validation request/response rõ ràng.
+
+### 3.2 LLM suy luận
+- Công nghệ: `Ollama` + model `chat-bot-yte` (base `qwen2.5:7b` trong `Modelfile`).
+- Vai trò:
+  - Phân loại off-topic (medical classifier).
+  - Query expansion.
+  - Sinh câu trả lời cuối.
+- Lý do dùng:
+  - Chạy local, không phụ thuộc cloud API.
+  - Qwen 7B cho chat tiếng Việt khá ổn trong prototype.
+
+### 3.3 Vector retrieval
+- Công nghệ: `ChromaDB` + embedding `BAAI/bge-m3`.
+- Vai trò:
+  - Lưu các chunk hỏi-đáp y tế.
+  - Semantic search theo cosine distance.
+- Lý do dùng:
+  - ChromaDB dễ setup local, có persistent storage.
+  - bge-m3 là model embedding đa ngôn ngữ tốt cho retrieval đa ngôn ngữ.
+
+### 3.4 Keyword retrieval
+- Công nghệ: `rank-bm25`.
+- Vai trò:
+  - Bắt các trường hợp cần khớp từ khóa chính xác (tên thuốc, tên bệnh, triệu chứng cụ thể).
+- Lý do dùng:
+  - Semantic search mạnh về ý nghĩa, BM25 mạnh về exact lexical match.
+  - Kết hợp 2 kênh giúp giảm miss retrieval.
+
+### 3.5 Rank fusion và rerank
+- Công nghệ:
+  - Reciprocal Rank Fusion (RRF) trong `src/retrieval.py`.
+  - CrossEncoder `BAAI/bge-reranker-base`.
+- Vai trò:
+  - RRF gộp nhiều danh sách kết quả (từ query gốc + query mở rộng, semantic + BM25).
+  - Reranker score lại cặp `(query, chunk)` để chọn top chunk chất lượng nhất.
+- Lý do dùng:
+  - Kết hợp retrieval candidates rộng và precision cao ở bước cuối.
+
+### 3.6 Dữ liệu nguồn
+- Nguồn: MedQuAD (script `build_medquad_vi.py` đang lọc `qtype = symptoms`).
+- Vai trò:
+  - Tạo kho tri thức ban đầu cho domain y tế.
+- Lý do dùng:
+  - Dữ liệu Q&A y tế có cấu trúc rõ ràng, phù hợp cho RAG prototype.
 
 ---
 
-## Luồng hoạt động chi tiết
+## 4. Luồng hoạt động chi tiết (runtime)
 
-### 1. Khởi động server
+### 4.1 Startup
+Khi chạy server (`scripts/run_server.sh`):
+- Warm-up semantic retrieval: gọi `query_chromadb("suc khoe", 1)` để load embedding + kết nối collection.
+- Nếu bật `HYBRID_SEARCH_ENABLED`: build BM25 index từ toàn bộ corpus trong Chroma 1 lần.
+- Nếu bật `RERANK_ENABLED`: preload reranker weights.
 
-```bash
-./scripts/run_server.sh
-```
+Ý nghĩa: request đầu tiên không bị trễ do lazy load model.
 
-Khi server khởi động, `lifespan` trong `main.py` chạy **warm-up**:
-- Gọi `query_chromadb("sức khỏe", 1)` để load embedding model và mở kết nối ChromaDB vào bộ nhớ
-- Mục đích: request đầu tiên không bị chậm do lazy-load model weights
-
-### 2. Nhận request
-
-```
+### 4.2 Nhận request chat
+Endpoint:
+```http
 POST /chat
-{ "message": "đau đầu kéo dài có nguy hiểm không?", "session_id": "user_123" }
+Content-Type: application/json
 ```
 
-- `session_id` tùy chọn — nếu không truyền sẽ dùng session mặc định `"default"`
-- Server lấy lịch sử hội thoại của session đó từ bộ nhớ (tối đa `MAX_HISTORY_MESSAGES = 12` tin nhắn gần nhất)
-
-### 3. Bước 1 — LLM Classifier (off-topic guard)
-
-Trước khi làm bất cứ điều gì, `chat.py` gọi `_is_medical_query()`:
-
-```
-Prompt gửi LLM:
-  "Nhiệm vụ: Xác định xem câu hỏi sau có thuộc lĩnh vực y tế, sức khỏe,
-   bệnh lý, triệu chứng, thuốc, dinh dưỡng, vệ sinh cá nhân... không.
-   Chỉ trả lời đúng một từ: CÓ hoặc KHÔNG.
-   Câu hỏi: {query}"
-```
-
-- `temperature=0`, `num_predict=10` → deterministic, cực nhanh
-- Trả về `"CÓ"` → đi tiếp; trả về `"KHÔNG"` → trả ngay câu từ chối cố định, **không gọi RAG hay LLM nữa**
-
-> Đây là cơ chế chính để lọc off-topic. Không dùng keyword cứng nên không bị bỏ sót.
-
-### 4. Bước 2 — Query Expansion
-
-Câu hỏi ngắn ("đau đầu là sao") có embedding nghèo — không match tốt với đoạn văn y tế dài trong ChromaDB. `_expand_query()` yêu cầu LLM sinh thêm **2 cách hỏi khác** cho cùng nội dung:
-
-```
-Query gốc:  "đau đầu là sao"
-Expansion 1: "Nguyên nhân gây ra đau đầu là gì?"
-Expansion 2: "Triệu chứng đau đầu và cách xử lý"
-```
-
-Tất cả 3 query sẽ được đưa vào bước tiếp theo.
-
-### 5. Bước 3 — Hybrid Search + Reciprocal Rank Fusion
-
-Mỗi query được tìm kiếm song song qua **2 kênh**:
-
-| Kênh | Cách hoạt động | Điểm mạnh |
-|---|---|---|
-| **Semantic** (ChromaDB + bge-m3) | Cosine similarity trên vector embedding | Câu hỏi mơ hồ, paraphrase |
-| **BM25** (rank-bm25, in-RAM) | Keyword matching (Okapi BM25) | Tên bệnh, tên thuốc, ký hiệu y tế cụ thể |
-
-Kết quả từ tất cả các list (3 queries × 2 kênh = 6 lists) được gộp bằng **Reciprocal Rank Fusion**:
-$$\text{RRF}(d) = \sum_{\text{list}} \frac{1}{k + \text{rank}(d)}$$
-Chunk xuất hiện cao trong nhiều list → score RRF cao → pool ~30 candidates chất lượng.
-
-### 6. Bước 4 — Reranking
-
-`rerank_chunks()` chạy **CrossEncoder** (`BAAI/bge-reranker-base`) trên toàn bộ pool:
-- Không dùng embedding riêng biệt — CrossEncoder nhìn đồng thời `(query, chunk)` nên hiểu ngữ cảnh sâu hơn bi-encoder
-- Score lại từng cặp, chọn **top-3 chunk** có score cao nhất đưa vào system prompt
-
-```
-Pool ~30 chunks  →  CrossEncoder score  →  top-3
-```
-
-### 7. Bước 5 — Sinh câu trả lời (LLM Chat)
-
-`chat.py` xây dựng `messages` cho Ollama:
-
-```
-[system]   SYSTEM_GUARDRAIL_VI
-           + (nếu có context) top-3 chunks sau rerank
-           + (nếu không có context) hướng dẫn dùng kiến thức chung
-
-[user/assistant]  lịch sử hội thoại gần nhất
-
-[user]     câu hỏi hiện tại
-```
-
-- Gọi `client.chat()` tới Ollama (`qwen2.5:7b`)
-- Mọi câu trả lời đều được `_ensure_disclaimer()` đảm bảo có dòng: *"Thông tin chỉ mang tính tham khảo; bạn nên gặp bác sĩ để được chẩn đoán và điều trị."*
-
-### 6. Trả kết quả
-
+Body:
 ```json
 {
-  "response": "Đau đầu kéo dài có thể do nhiều nguyên nhân...\n\nThông tin chỉ mang tính tham khảo...",
+  "message": "Dau dau keo dai co nguy hiem khong?",
   "session_id": "user_123"
 }
 ```
 
-Lịch sử hội thoại được lưu lại trong RAM cho session đó, phục vụ các lượt hỏi tiếp theo.
+Server:
+- Chuẩn hóa `session_id` (mặc định `default` nếu không có).
+- Lấy lịch sử hội thoại theo session trong RAM.
+
+### 4.3 Bước 1 - Kiểm tra chủ đề y tế
+Hàm: `_is_medical_query()` trong `src/chat.py`.
+- Gửi prompt classifier cho Ollama.
+- Kỳ vọng model trả `CO`/`KHONG`.
+- Nếu `KHONG`: trả ngay `REFUSAL_OFF_TOPIC_VI`, không retrieve, không generate thêm.
+
+Tại sao cần bước này?
+- Giữ phạm vi hệ thống.
+- Giảm nguy cơ model "trò chuyện linh tinh" ngoài y tế.
+
+### 4.4 Bước 2 - Query expansion
+Hàm: `_expand_query()`.
+- Từ 1 câu hỏi, sinh thêm `QUERY_EXPANSION_N` cách diễn đạt (mặc định 2).
+- Tổng thành 3 truy vấn: `[query_goc, query_1, query_2]`.
+
+Tại sao cần?
+- Người dùng viết câu hỏi ngắn/không chuẩn văn phong.
+- Expansion tăng khả năng bắt đúng document liên quan.
+
+### 4.5 Bước 3 - Hybrid retrieval
+Với mỗi query:
+- Semantic search: `query_chromadb()`.
+- Keyword search: `bm25_search()` (nếu hybrid đang bật).
+
+Sau đó:
+- Dùng `reciprocal_rank_fusion()` để gộp kết quả.
+- RRF ưu tiên chunk xuất hiện ở vị trí cao trong nhiều danh sách.
+
+### 4.6 Bước 4 - Reranking
+Hàm: `rerank_chunks()`.
+- Input: pool candidates.
+- CrossEncoder score lại theo cặp `(user_message, chunk_text)`.
+- Lấy `RERANK_TOP_N` chunk (mặc định 3) đưa vào prompt.
+
+### 4.7 Bước 5 - Build prompt và generate
+`chat_once()` xây `messages` theo thứ tự:
+- `system`: guardrail + context chunks (nếu có).
+- `history`: tối đa `MAX_HISTORY_MESSAGES` gần nhất.
+- `user`: câu hỏi hiện tại.
+
+Sau đó gọi:
+- `client.chat(model=OLLAMA_MODEL, messages=...)`.
+
+Kết quả được:
+- Ép bổ sung disclaimer nếu model quên (`_ensure_disclaimer()`).
+- Lưu vào history session (`user`, `assistant`).
+- Trả lại API.
 
 ---
 
-## Cài đặt & Chạy
+## 5. Đầu vào - đầu ra và data flow
 
-### Yêu cầu
+### 5.1 Đầu vào runtime
+- Từ người dùng: `message`, `session_id`.
+- Từ hệ thống: collection ChromaDB, cấu hình env, model Ollama.
 
+### 5.2 Đầu ra runtime
+`POST /chat` trả:
+```json
+{
+  "response": "...noi dung tu van...\n\nThong tin chi mang tinh tham khao...",
+  "session_id": "user_123"
+}
+```
+
+### 5.3 Dữ liệu đi như thế nào?
+```text
+User question
+  -> classifier
+  -> (optional) expansion
+  -> retrieval (semantic + bm25)
+  -> fusion + rerank
+  -> LLM answer with context + history
+  -> response + save session in RAM
+```
+
+Lưu ý quan trọng:
+- Lịch sử session hiện tại lưu trong RAM (`_sessions`), restart server sẽ mất.
+- Tri thức RAG lưu bền vững trong `chroma_db/`.
+
+---
+
+## 6. Pipeline dữ liệu xây kho tri thức (offline indexing)
+
+### Bước A - Tạo CSV tiếng Việt
+Script: `scripts/build_medquad_vi.py`
+- Load dataset `keivalya/MedQuad-MedicalQnADataset`.
+- Lọc `qtype` theo danh sách cho phép (hiện tại là `symptoms`).
+- Có thể dịch bằng provider (`azure`, `libretranslate`) hoặc giữ nguyên (`none`).
+- Output: `data/medquad_vi.csv`.
+
+### Bước B - Index vào ChromaDB
+Script: `scripts/index_to_chromadb.py`
+- Đọc CSV.
+- Tạo document dạng `Hoi: ...\nDap: ...`.
+- Chunk text theo `max_chars/overlap`.
+- Embed bằng `BAAI/bge-m3`.
+- Add vào collection Chroma persistent.
+
+---
+
+## 7. API reference
+
+### 7.1 `GET /health`
+Mục đích: kiểm tra server và Ollama.
+
+Response mẫu:
+```json
+{
+  "status": "ok",
+  "ollama_ok": true
+}
+```
+
+### 7.2 `POST /chat`
+Request:
+- `message` (`string`, required): câu hỏi.
+- `session_id` (`string`, optional): id phiên chat.
+
+Response:
+- `response`: câu trả lời đã qua guardrail.
+- `session_id`: id phiên được sử dụng.
+
+---
+
+## 8. Cấu hình environment variables
+
+### Core
+- `OLLAMA_MODEL` (default: `chat-bot-yte`): tên model Ollama được gọi.
+- `OLLAMA_HOST` (default: `http://localhost:11434`): endpoint Ollama.
+
+### Retrieval
+- `CHROMA_PATH` (default: `chroma_db`): thư mục Chroma persistent.
+- `CHROMA_COLLECTION` (default: `medquad_vi`): tên collection.
+- `EMBED_MODEL_NAME` (default: `BAAI/bge-m3`): embedding model.
+- `TOP_K` (default: `5`): số chunk trả về khi không rerank.
+- `RAG_DISTANCE_OFF_TOPIC_THRESHOLD` (default: `0.75`): ngưỡng fallback khi không có rerank.
+
+### Rerank / Hybrid / Expansion
+- `RERANK_ENABLED` (`true|false`, default `true`).
+- `RERANKER_MODEL_NAME` (default `BAAI/bge-reranker-base`).
+- `RERANK_TOP_N` (default `3`).
+- `RETRIEVE_CANDIDATES` (default `10`).
+- `HYBRID_SEARCH_ENABLED` (`true|false`, default `true`).
+- `QUERY_EXPANSION_ENABLED` (`true|false`, default `true`).
+- `QUERY_EXPANSION_N` (default `2`).
+
+### Conversation behavior
+- `MAX_HISTORY_MESSAGES` (default `12`): số message history đưa vào prompt.
+- `REFUSAL_OFF_TOPIC_VI`: câu từ chối cố định khi off-topic.
+- `SYSTEM_GUARDRAIL_VI`: system instruction tổng.
+
+### Optional
+- `HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`: token Hugging Face để tải model ổn định hơn.
+
+---
+
+## 9. Cài đặt và chạy
+
+### 9.1 Yêu cầu
 - Python 3.10+
-- [Ollama](https://ollama.com) đang chạy locally
-- (Tùy chọn) HuggingFace token để tải embedding model nhanh hơn
+- Ollama đã cài và đang chạy.
+- Model được tạo từ `Modelfile`.
 
-### 1. Cài dependencies
-
+### 9.2 Cài dependencies
 ```bash
 cd chat-bot
 pip install -r requirements.txt
 ```
 
-### 2. Tạo Ollama model
-
+### 9.3 Tạo model Ollama cho app
 ```bash
 ollama create chat-bot-yte -f Modelfile
 ```
 
-Model dựa trên `qwen2.5:7b` với `temperature=0.5`, `num_ctx=4096`.
-
-### 3. (Lần đầu) Build dữ liệu & Index vào ChromaDB
-
-Nếu chưa có `chroma_db/` hoặc muốn rebuild:
-
+### 9.4 (Nếu cần) rebuild tri thức
 ```bash
-# Bước 1: Tải và dịch dataset MedQuAD sang tiếng Việt
-python scripts/build_medquad_vi.py
-
-# Bước 2: Index CSV vào ChromaDB
-python scripts/index_to_chromadb.py
+python scripts/build_medquad_vi.py --limit 800 --translate-provider none
+python scripts/index_to_chromadb.py --in data/medquad_vi.csv
 ```
 
-> `chroma_db/` đã có sẵn trong repo — bỏ qua bước này nếu không cần rebuild.
-
-### 4. Chạy server
-
+### 9.5 Chạy API
 ```bash
-# Tùy chọn: set HF token để tránh rate limit khi tải model
-export HF_TOKEN=hf_xxx
-
 ./scripts/run_server.sh
-# → http://localhost:8000
 ```
+Mặc định: `http://localhost:8000`
 
 ---
 
-## API
+## 10. Cấu trúc thư mục và vai trò
 
-### `GET /health`
-
-Kiểm tra trạng thái server và kết nối Ollama.
-
-```json
-{ "status": "ok", "ollama_ok": true }
-```
-
-### `POST /chat`
-
-| Field | Type | Mô tả |
-|---|---|---|
-| `message` | string (required) | Câu hỏi của người dùng |
-| `session_id` | string (optional) | ID phiên hội thoại, mặc định `"default"` |
-
----
-
-## Cấu hình (Environment Variables)
-
-| Biến | Mặc định | Mô tả |
-|---|---|---|
-| `OLLAMA_MODEL` | `chat-bot-yte` | Tên model Ollama |
-| `OLLAMA_HOST` | `http://localhost:11434` | Địa chỉ Ollama |
-| `EMBED_MODEL_NAME` | `BAAI/bge-m3` | Model embedding HuggingFace |
-| `CHROMA_PATH` | `chroma_db` | Thư mục lưu ChromaDB |
-| `CHROMA_COLLECTION` | `medquad_vi` | Tên collection |
-| `TOP_K` | `5` | Số chunks semantic search (fallback khi rerank tắt) |
-| `RETRIEVE_CANDIDATES` | `10` | Số candidates lấy từ mỗi nguồn trước khi rerank |
-| `RERANK_ENABLED` | `true` | Bật/tắt CrossEncoder reranking |
-| `RERANKER_MODEL_NAME` | `BAAI/bge-reranker-base` | Model CrossEncoder |
-| `RERANK_TOP_N` | `3` | Số chunks đưa vào prompt sau rerank |
-| `HYBRID_SEARCH_ENABLED` | `true` | Bật/tắt BM25 hybrid search |
-| `QUERY_EXPANSION_ENABLED` | `true` | Bật/tắt query expansion bằng LLM |
-| `QUERY_EXPANSION_N` | `2` | Số câu hỏi mở rộng sinh thêm |
-| `RAG_DISTANCE_OFF_TOPIC_THRESHOLD` | `0.75` | Ngưỡng cosine distance (chỉ dùng khi rerank tắt) |
-| `MAX_HISTORY_MESSAGES` | `12` | Số tin nhắn lịch sử giữ per session |
-| `HF_TOKEN` | _(trống)_ | HuggingFace API token |
-
----
-
-## Cấu trúc thư mục
-
-```
+```text
 chat-bot/
-├── main.py                  # FastAPI app, endpoints, session management, warm-up
-├── Modelfile                # Định nghĩa Ollama model (base: qwen2.5:7b)
-├── requirements.txt
-├── src/
-│   ├── chat.py              # Logic chính: classifier → expand → hybrid → rerank → LLM
-│   ├── retrieval.py         # ChromaDB semantic, BM25, RRF, CrossEncoder reranker
-│   └── config.py            # Tất cả hằng số & env vars
-├── scripts/
-│   ├── build_medquad_vi.py  # Tải và dịch dataset MedQuAD
-│   ├── index_to_chromadb.py # Index CSV vào ChromaDB
-│   ├── run_server.sh        # Script chạy server
-│   └── test_chat.py         # Test nhanh API
-└── data/
-    └── medquad_vi.csv       # Dataset y tế tiếng Việt
+  main.py                    # FastAPI app, session memory RAM, endpoints
+  Modelfile                  # Định nghĩa model chat-bot-yte (base qwen2.5:7b)
+  src/
+    config.py                # Toàn bộ env config và guardrail strings
+    chat.py                  # Pipeline chat_once: classifier -> retrieve -> answer
+    retrieval.py             # Chroma, BM25, RRF, reranker
+  scripts/
+    build_medquad_vi.py      # Tạo data CSV từ MedQuAD
+    index_to_chromadb.py     # Chunk + embedding + index vào Chroma
+    run_server.sh            # Chạy uvicorn
+  data/medquad_vi.csv        # Data đầu vào cho indexing
+  chroma_db/                 # Vector DB local persistent
 ```
+
+---
+
+## 11. Giới hạn hiện tại và hướng mở rộng
+
+Giới hạn:
+- Session history đang lưu RAM, chưa có Redis/DB cho production.
+- Off-topic classifier phụ thuộc LLM (có thể cần eval thêm với bộ test).
+- Nguồn tri thức hiện tại chủ yếu từ MedQuAD subset.
+
+Hướng mở rộng:
+- Thêm bộ test regression cho classifier và retrieval.
+- Bổ sung citation (id chunk/nguồn) trong response.
+- Lưu session persistent và telemetry cho monitoring.
