@@ -1,0 +1,17 @@
+services:
+  x-ray:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: son-x-ray
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8020:8020"
+    networks:
+      - health-management-network
+
+networks:
+  health-management-network:
+    external: true
