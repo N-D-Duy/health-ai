@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import requests
@@ -9,7 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.config import OLLAMA_HOST, UPLOAD_DIR
+from src.config import OLLAMA_HOST, OLLAMA_MODEL, UPLOAD_DIR
 from src.models import FinalizePayload, HealthResponse, ReviewPayload, StartSessionRequest
 from src.services.clinical_nlp_service import ClinicalNlpService
 from src.services.ollama_client import OllamaClient
@@ -19,7 +21,29 @@ from src.services.stt_service import SttService
 
 load_dotenv(override=False)
 
-app = FastAPI(title="stt-bot-medical-scribe", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm-up: ping Ollama để đảm bảo model đang loaded vào VRAM trước request đầu tiên.
+    # stt-bot dùng chung model với chat-bot (OLLAMA_MODEL), Ollama cache trong 5m (keep_alive).
+    try:
+        import ollama
+        client = ollama.Client(host=OLLAMA_HOST)
+        await asyncio.to_thread(
+            client.generate,
+            model=OLLAMA_MODEL,
+            prompt="ok",
+            options={"num_predict": 1},
+        )
+        logger.info("Ollama warm-up done (model=%s)", OLLAMA_MODEL)
+    except Exception as e:
+        logger.warning("Ollama warm-up failed (non-fatal): %s", e)
+    yield
+
+
+app = FastAPI(title="stt-bot-medical-scribe", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,0 +1,124 @@
+# Docker Compose cho chat-bot + stt-bot + Ollama
+# Target: RunPod GPU pod (RTX 4090 24GB, Ubuntu 24.04)
+#
+# Biến môi trường cấu hình (tạo file .env cùng thư mục docker-compose.yml):
+#   VOLUME_PATH      — nơi network volume được mount trên host (mặc định: /workspace)
+#   CHAT_LLM_MODEL   — LLM model cho chat-bot (mặc định: chat-bot-yte)
+#   STT_LLM_MODEL    — LLM model cho stt-bot (mặc định: qwen2.5:14b)
+#   WHISPER_SIZE     — Whisper model size (mặc định: large-v3)
+
+services:
+
+  # ── Ollama ────────────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: son-ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      OLLAMA_MODELS: /workspace/ollama/models
+    volumes:
+      - type: bind
+        source: ${VOLUME_PATH:-/workspace}/ollama/models
+        target: /workspace/ollama/models
+        bind:
+          create_host_path: true
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  # ── chat-bot ──────────────────────────────────────────────────────────────────
+  chat-bot:
+    build:
+      context: ./chat-bot
+      dockerfile: Dockerfile
+    container_name: son-chat-bot
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Secrets từ chat-bot/.env (HF_TOKEN, AZURE keys, v.v.).
+    # OLLAMA_HOST và các path override bên dưới sẽ đè lên giá trị trong file .env.
+    env_file:
+      - ./chat-bot/.env
+    environment:
+      OLLAMA_HOST: http://son-ollama:11434
+      OLLAMA_MODEL: ${CHAT_LLM_MODEL:-chat-bot-yte}
+      CHROMA_PATH: /workspace/chroma_db
+      HF_HOME: /workspace/hf_cache
+      TRANSFORMERS_CACHE: /workspace/hf_cache
+    volumes:
+      # ChromaDB — cần copy từ chat-bot/chroma_db/ lên trước (xem setup-models.sh)
+      - type: bind
+        source: ${VOLUME_PATH:-/workspace}/chroma_db
+        target: /workspace/chroma_db
+        bind:
+          create_host_path: true
+      # HuggingFace model cache (bge-m3, reranker) — persistent trên network volume
+      - type: bind
+        source: ${VOLUME_PATH:-/workspace}/hf_cache
+        target: /workspace/hf_cache
+        bind:
+          create_host_path: true
+    ports:
+      - "8000:8000"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  # ── stt-bot ───────────────────────────────────────────────────────────────────
+  stt-bot:
+    build:
+      context: ./stt-bot
+      dockerfile: Dockerfile
+    container_name: son-stt-bot
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      OLLAMA_HOST: http://son-ollama:11434
+      # Dùng cùng model với chat-bot để Ollama chỉ load 1 model vào VRAM
+      OLLAMA_MODEL: ${CHAT_LLM_MODEL:-chat-bot-yte}
+      WHISPER_MODEL_SIZE: ${WHISPER_SIZE:-large-v3}
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      # Whisper model cache trên network volume
+      HF_HOME: /workspace/hf_cache
+    volumes:
+      # uploads + sessions.json — persistent
+      - type: bind
+        source: ${VOLUME_PATH:-/workspace}/stt_data
+        target: /app/data
+        bind:
+          create_host_path: true
+      # HuggingFace cache chung với chat-bot (Whisper download 1 lần)
+      - type: bind
+        source: ${VOLUME_PATH:-/workspace}/hf_cache
+        target: /workspace/hf_cache
+        bind:
+          create_host_path: true
+    ports:
+      - "8010:8010"
+    depends_on:
+      ollama:
+        condition: service_healthy

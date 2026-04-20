@@ -29,9 +29,22 @@ class SessionStore:
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    _EMPTY: dict = {
+        "sessions": {},
+        "transcripts": {},
+        "extractions": {},
+        "soap_notes": {},
+        "reviews": {},
+        "finalizations": {},
+    }
+
     def _read(self) -> dict:
         with self.file_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Ensure all required top-level keys exist (handles empty {} or partial files)
+        for key in self._EMPTY:
+            data.setdefault(key, {})
+        return data
 
     def _write(self, data: dict) -> None:
         with self.file_path.open("w", encoding="utf-8") as f:
