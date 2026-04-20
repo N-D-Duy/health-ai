@@ -59,9 +59,13 @@ trap cleanup SIGINT SIGTERM EXIT
 # ============================================================
 info "=== [1/7] Kiểm tra system dependencies ==="
 
-if ! command -v ffmpeg &>/dev/null; then
-    info "Cài ffmpeg..."
-    apt-get update -qq && apt-get install -y -qq ffmpeg
+MISSING_PKGS=()
+command -v ffmpeg  &>/dev/null || MISSING_PKGS+=(ffmpeg)
+command -v zstd    &>/dev/null || MISSING_PKGS+=(zstd)
+command -v curl    &>/dev/null || MISSING_PKGS+=(curl)
+if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
+    info "Cài: ${MISSING_PKGS[*]}"
+    apt-get update -qq && apt-get install -y -qq "${MISSING_PKGS[@]}"
 fi
 ok "ffmpeg: $(ffmpeg -version 2>&1 | head -1)"
 
