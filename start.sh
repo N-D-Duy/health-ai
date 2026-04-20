@@ -4,17 +4,16 @@
 # Dùng cho RunPod (không cần Docker).
 #
 # Usage:
-#   bash start.sh              # dùng defaults
-#   LLM_MODEL=qwen2.5:14b bash start.sh
-#   WHISPER_SIZE=large-v3 bash start.sh
+#   bash start.sh                                    # defaults
+#   LLM_MODEL=qwen2.5:14b WHISPER_SIZE=large-v3 bash start.sh
 #
 # Biến env có thể override:
-#   LLM_MODEL       LLM base model để pull (default: qwen2.5:7b)
-#   CUSTOM_MODEL    tên model custom trong Ollama (default: chat-bot-yte)
-#   WHISPER_SIZE    faster-whisper model size (default: medium)
-#   CHAT_PORT       port chat-bot (default: 8000)
-#   STT_PORT        port stt-bot  (default: 8010)
-#   WORKSPACE       thư mục data persistent (default: /workspace)
+#   LLM_MODEL       LLM base model để pull     (default: qwen2.5:7b)
+#   CUSTOM_MODEL    tên model custom Ollama     (default: chat-bot-yte)
+#   WHISPER_SIZE    faster-whisper model size   (default: medium)
+#   CHAT_PORT       port chat-bot               (default: 8000)
+#   STT_PORT        port stt-bot                (default: 8010)
+#   WORKSPACE       thư mục data persistent     (default: /workspace)
 # ============================================================
 set -euo pipefail
 
@@ -39,43 +38,62 @@ CYAN='\033[0;36m'; RESET='\033[0m'
 info()  { echo -e "${CYAN}[start.sh]${RESET} $*"; }
 ok()    { echo -e "${GREEN}[start.sh]${RESET} $*"; }
 warn()  { echo -e "${YELLOW}[start.sh]${RESET} $*"; }
-error() { echo -e "${RED}[start.sh]${RESET} $*"; exit 1; }
+die()   { echo -e "${RED}[start.sh] ERROR:${RESET} $*"; exit 1; }
 
-# ── Cleanup khi tắt script ────────────────────────────────────
+# ── Cleanup khi Ctrl+C / tắt ─────────────────────────────────
 cleanup() {
+    echo ""
     info "Shutting down services..."
     for pid_file in "$PID_DIR"/*.pid; do
         [ -f "$pid_file" ] || continue
         pid=$(cat "$pid_file")
-        kill "$pid" 2>/dev/null && info "Stopped PID $pid ($(basename "$pid_file" .pid))" || true
+        name=$(basename "$pid_file" .pid)
+        kill "$pid" 2>/dev/null \
+            && info "Stopped $name (PID $pid)" \
+            || true
         rm -f "$pid_file"
     done
-    # Không stop Ollama — để giữ model trong VRAM nếu restart service
 }
 trap cleanup SIGINT SIGTERM EXIT
 
 # ============================================================
-# 1. System deps
+# 1. Detect Python TRƯỚC khi làm gì khác
 # ============================================================
-info "=== [1/7] Kiểm tra system dependencies ==="
+info "=== [1/7] System dependencies ==="
 
+PYTHON=""
+for py in python3.12 python3.11 python3.10 python3 python; do
+    if command -v "$py" &>/dev/null; then
+        PYTHON=$(command -v "$py")
+        break
+    fi
+done
+[ -n "$PYTHON" ] || die "Không tìm thấy Python. Cài python3 trước."
+PY_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+ok "Python: $PYTHON ($PY_VER)"
+
+# ── Apt packages ──────────────────────────────────────────────
 MISSING_PKGS=()
-command -v ffmpeg  &>/dev/null || MISSING_PKGS+=(ffmpeg)
-command -v zstd    &>/dev/null || MISSING_PKGS+=(zstd)
-command -v curl    &>/dev/null || MISSING_PKGS+=(curl)
-command -v lspci   &>/dev/null || MISSING_PKGS+=(pciutils)
-# python3-venv cần cho `python -m venv` tạo được venv có pip
-"$PYTHON" -m venv --help &>/dev/null || MISSING_PKGS+=(python3-venv python3-pip)
+command -v curl   &>/dev/null || MISSING_PKGS+=(curl)
+command -v git    &>/dev/null || MISSING_PKGS+=(git)
+command -v ffmpeg &>/dev/null || MISSING_PKGS+=(ffmpeg)
+command -v zstd   &>/dev/null || MISSING_PKGS+=(zstd)
+command -v lspci  &>/dev/null || MISSING_PKGS+=(pciutils)
+command -v gcc    &>/dev/null || MISSING_PKGS+=(build-essential)
+# Kiểm tra python3-venv: thử tạo venv test không dùng pip
+if ! "$PYTHON" -m venv --without-pip /tmp/_venv_test &>/dev/null; then
+    MISSING_PKGS+=(python3-venv)
+fi
+rm -rf /tmp/_venv_test
+
 if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
-    info "Cài: ${MISSING_PKGS[*]}"
+    info "Cài apt packages: ${MISSING_PKGS[*]}"
     apt-get update -qq && apt-get install -y -qq "${MISSING_PKGS[@]}"
+    ok "apt OK."
+else
+    ok "Tất cả apt packages đã có."
 fi
 ok "ffmpeg: $(ffmpeg -version 2>&1 | head -1)"
-
-# Detect Python 3.12 hoặc fallback
-PYTHON=$(command -v python3.12 || command -v python3 || command -v python)
-PY_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-info "Python: $PYTHON ($PY_VER)"
 
 # ============================================================
 # 2. Ollama
@@ -87,19 +105,22 @@ if ! command -v ollama &>/dev/null; then
     curl -fsSL https://ollama.com/install.sh | sh
     export PATH="/usr/local/bin:$PATH"
 fi
-ok "Ollama: $(ollama --version 2>/dev/null || echo 'installed')"
+command -v ollama &>/dev/null || die "Ollama install thất bại."
+ok "Ollama: $(ollama --version 2>/dev/null | head -1)"
 
-# Start Ollama nếu chưa chạy
+# Start ollama serve nếu chưa chạy
 if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
     info "Khởi động ollama serve..."
-    OLLAMA_MODELS="$WORKSPACE/ollama/models" ollama serve >> "$LOG_DIR/ollama.log" 2>&1 &
+    OLLAMA_MODELS="$WORKSPACE/ollama/models" ollama serve \
+        >> "$LOG_DIR/ollama.log" 2>&1 &
     echo $! > "$PID_DIR/ollama.pid"
     info "Đợi Ollama ready..."
     for i in $(seq 1 30); do
         curl -sf http://localhost:11434/api/tags &>/dev/null && break
         sleep 2
     done
-    curl -sf http://localhost:11434/api/tags &>/dev/null || error "Ollama không start được."
+    curl -sf http://localhost:11434/api/tags &>/dev/null \
+        || die "Ollama không start được. Xem: $LOG_DIR/ollama.log"
     ok "Ollama ready."
 else
     ok "Ollama đang chạy sẵn."
@@ -110,86 +131,94 @@ fi
 # ============================================================
 info "=== [3/7] Models ==="
 
-# Kiểm tra base model đã có chưa (tránh pull lại ~5GB)
-if ollama list 2>/dev/null | grep -q "^${LLM_MODEL}"; then
-    ok "Model ${LLM_MODEL} đã có sẵn."
+if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "${LLM_MODEL}"; then
+    ok "Base model ${LLM_MODEL} đã có sẵn."
 else
-    info "Pull ${LLM_MODEL}..."
+    info "Pull ${LLM_MODEL} (có thể mất vài phút)..."
     ollama pull "$LLM_MODEL"
+    ok "Pull xong."
 fi
 
-# Tạo custom model chat-bot-yte nếu chưa có
-if ! ollama list 2>/dev/null | grep -q "^${CUSTOM_MODEL}"; then
+if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "${CUSTOM_MODEL}"; then
+    ok "Custom model ${CUSTOM_MODEL} đã có sẵn."
+else
     info "Tạo model ${CUSTOM_MODEL} từ Modelfile..."
     MODELFILE_TMP=$(mktemp)
     sed "s|^FROM .*|FROM ${LLM_MODEL}|" "$CHAT_ROOT/Modelfile" > "$MODELFILE_TMP"
     ollama create "$CUSTOM_MODEL" -f "$MODELFILE_TMP"
     rm -f "$MODELFILE_TMP"
     ok "Model ${CUSTOM_MODEL} đã tạo."
-else
-    ok "Model ${CUSTOM_MODEL} đã có sẵn."
 fi
 
 # ============================================================
-# 4. Warmup model vào VRAM (1 lần, giữ suốt phiên)
+# 4. Warmup model vào VRAM
 # ============================================================
 info "=== [4/7] Warmup LLM vào VRAM ==="
 curl -sf -X POST http://localhost:11434/api/generate \
     -H "Content-Type: application/json" \
-    -d "{\"model\": \"${CUSTOM_MODEL}\", \"prompt\": \"ok\", \"stream\": false, \"options\": {\"num_predict\": 1}}" \
+    -d "{\"model\":\"${CUSTOM_MODEL}\",\"prompt\":\"ok\",\"stream\":false,\"options\":{\"num_predict\":1}}" \
     > /dev/null
 ok "Model ${CUSTOM_MODEL} đã load vào VRAM."
 
 # ============================================================
-# 5. Cài pip dependencies
+# 5. Python venv + pip install
 # ============================================================
 info "=== [5/7] Python dependencies ==="
 
-# chat-bot venv
-if [ ! -d "$CHAT_ROOT/.venv" ] || [ ! -f "$CHAT_ROOT/.venv/bin/pip" ]; then
-    info "Tạo venv cho chat-bot..."
-    "$PYTHON" -m venv "$CHAT_ROOT/.venv"
-fi
-CHAT_PIP="$CHAT_ROOT/.venv/bin/python -m pip"
-info "Cài chat-bot requirements..."
-$CHAT_PIP install --quiet --upgrade pip
-# Cài torch CPU (chat-bot dùng embedding/reranker, Ollama lo LLM)
-# Dùng torch+cpu để tiết kiệm VRAM cho Ollama + Whisper
-$CHAT_PIP install --quiet \
-    torch --index-url https://download.pytorch.org/whl/cpu
-$CHAT_PIP install --quiet -r "$CHAT_ROOT/requirements.txt"
-ok "chat-bot deps OK."
+# Helper: tạo venv + install; bỏ qua nếu requirements.txt chưa thay đổi
+setup_venv() {
+    local name="$1"
+    local venv_dir="$2"
+    local req_file="$3"
+    shift 3  # phần còn lại là extra pip args
 
-# stt-bot venv
-if [ ! -d "$STT_ROOT/.venv" ] || [ ! -f "$STT_ROOT/.venv/bin/pip" ]; then
-    info "Tạo venv cho stt-bot..."
-    "$PYTHON" -m venv "$STT_ROOT/.venv"
-fi
-STT_PIP="$STT_ROOT/.venv/bin/python -m pip"
-info "Cài stt-bot requirements..."
-$STT_PIP install --quiet --upgrade pip
-$STT_PIP install --quiet -r "$STT_ROOT/requirements.txt"
-ok "stt-bot deps OK."
+    local stamp="$venv_dir/.install_stamp"
+
+    if [ ! -d "$venv_dir" ] || [ ! -f "$venv_dir/bin/python" ]; then
+        info "Tạo venv $name..."
+        "$PYTHON" -m venv "$venv_dir"
+    fi
+
+    # Chỉ reinstall khi requirements.txt mới hơn stamp
+    if [ ! -f "$stamp" ] || [ "$req_file" -nt "$stamp" ]; then
+        info "Cài $name requirements..."
+        "$venv_dir/bin/python" -m pip install --quiet --upgrade pip
+        "$venv_dir/bin/python" -m pip install --quiet "$@"
+        touch "$stamp"
+        ok "$name deps OK."
+    else
+        ok "$name deps đã up-to-date (stamp)."
+    fi
+}
+
+# chat-bot: torch CPU — tiết kiệm VRAM cho Ollama + Whisper
+setup_venv "chat-bot" "$CHAT_ROOT/.venv" "$CHAT_ROOT/requirements.txt" \
+    torch --index-url https://download.pytorch.org/whl/cpu \
+    -r "$CHAT_ROOT/requirements.txt"
+
+# stt-bot: nvidia-cublas-cu12 + nvidia-cudnn-cu12 đã có trong requirements.txt
+setup_venv "stt-bot" "$STT_ROOT/.venv" "$STT_ROOT/requirements.txt" \
+    -r "$STT_ROOT/requirements.txt"
 
 # ============================================================
-# 6. Chuẩn bị data directories + ChromaDB
+# 6. Data directories
 # ============================================================
 info "=== [6/7] Data directories ==="
 
 CHROMA_DEST="$WORKSPACE/chroma_db"
-mkdir -p "$CHROMA_DEST"
-mkdir -p "$WORKSPACE/hf_cache"
-mkdir -p "$WORKSPACE/stt_data/uploads"
-mkdir -p "$WORKSPACE/stt_data/store"
+mkdir -p "$CHROMA_DEST" \
+         "$WORKSPACE/hf_cache" \
+         "$WORKSPACE/stt_data/uploads" \
+         "$WORKSPACE/stt_data/store" \
+         "$WORKSPACE/ollama/models"
 
 SESSIONS_FILE="$WORKSPACE/stt_data/store/sessions.json"
 if [ ! -f "$SESSIONS_FILE" ]; then
-    echo '{"sessions":{},"transcripts":{},"extractions":{},"soap_notes":{},"reviews":{},"finalizations":{}}' \
+    printf '{"sessions":{},"transcripts":{},"extractions":{},"soap_notes":{},"reviews":{},"finalizations":{}}' \
         > "$SESSIONS_FILE"
     ok "sessions.json khởi tạo."
 fi
 
-# Copy ChromaDB lên workspace nếu chưa có
 CHROMA_SRC="$CHAT_ROOT/chroma_db"
 if [ -d "$CHROMA_SRC" ] && [ -n "$(ls -A "$CHROMA_SRC" 2>/dev/null)" ]; then
     if [ -z "$(ls -A "$CHROMA_DEST" 2>/dev/null)" ]; then
@@ -205,19 +234,15 @@ fi
 # ============================================================
 info "=== [7/7] Khởi chạy services ==="
 
-# ── chat-bot ────────────────────────────────────────────────
-STT_VENV_SITE="$STT_ROOT/.venv/lib/python${PY_VER}/site-packages"
-CUBLAS_LIB="$STT_VENV_SITE/nvidia/cublas/lib"
-CUDNN_LIB="$STT_VENV_SITE/nvidia/cudnn/lib"
+# LD_LIBRARY_PATH cho faster-whisper (CUDA libs được pip install vào site-packages)
+STT_SITE="$STT_ROOT/.venv/lib/python${PY_VER}/site-packages"
+CUBLAS_LIB="$STT_SITE/nvidia/cublas/lib"
+CUDNN_LIB="$STT_SITE/nvidia/cudnn/lib"
+EXTRA_LD="${CUBLAS_LIB}:${CUDNN_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-CHAT_ENV="HF_HOME=$WORKSPACE/hf_cache \
-TRANSFORMERS_CACHE=$WORKSPACE/hf_cache \
-CHROMA_PATH=$CHROMA_DEST \
-OLLAMA_HOST=http://localhost:11434 \
-OLLAMA_MODEL=$CUSTOM_MODEL \
-CUDA_VISIBLE_DEVICES="
-
-env HF_HOME="$WORKSPACE/hf_cache" \
+# ── chat-bot ──────────────────────────────────────────────────
+env \
+    HF_HOME="$WORKSPACE/hf_cache" \
     TRANSFORMERS_CACHE="$WORKSPACE/hf_cache" \
     CHROMA_PATH="$CHROMA_DEST" \
     OLLAMA_HOST="http://localhost:11434" \
@@ -230,8 +255,9 @@ env HF_HOME="$WORKSPACE/hf_cache" \
 echo $! > "$PID_DIR/chat-bot.pid"
 ok "chat-bot PID $(cat "$PID_DIR/chat-bot.pid") → :${CHAT_PORT}  [log: .logs/chat-bot.log]"
 
-# ── stt-bot ─────────────────────────────────────────────────
-env HF_HOME="$WORKSPACE/hf_cache" \
+# ── stt-bot ───────────────────────────────────────────────────
+env \
+    HF_HOME="$WORKSPACE/hf_cache" \
     OLLAMA_HOST="http://localhost:11434" \
     OLLAMA_MODEL="$CUSTOM_MODEL" \
     WHISPER_MODEL_SIZE="$WHISPER_SIZE" \
@@ -239,7 +265,7 @@ env HF_HOME="$WORKSPACE/hf_cache" \
     WHISPER_COMPUTE_TYPE="float16" \
     UPLOAD_DIR="$WORKSPACE/stt_data/uploads" \
     STORE_FILE="$WORKSPACE/stt_data/store/sessions.json" \
-    LD_LIBRARY_PATH="${CUBLAS_LIB}:${CUDNN_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    LD_LIBRARY_PATH="$EXTRA_LD" \
     "$STT_ROOT/.venv/bin/uvicorn" main:app \
         --host 0.0.0.0 --port "$STT_PORT" \
         --app-dir "$STT_ROOT" \
@@ -247,16 +273,17 @@ env HF_HOME="$WORKSPACE/hf_cache" \
 echo $! > "$PID_DIR/stt-bot.pid"
 ok "stt-bot  PID $(cat "$PID_DIR/stt-bot.pid") → :${STT_PORT}  [log: .logs/stt-bot.log]"
 
-# ── Chờ services ready ────────────────────────────────────────
+# ── Đợi cả hai healthy ────────────────────────────────────────
 info "Đợi services ready..."
-sleep 3
-for svc in "chat-bot:$CHAT_PORT/health" "stt-bot:$STT_PORT/health"; do
-    name="${svc%%:*}"; endpoint="${svc#*:}"
+sleep 4
+for entry in "chat-bot:${CHAT_PORT}" "stt-bot:${STT_PORT}"; do
+    name="${entry%%:*}"; port="${entry##*:}"
     for i in $(seq 1 20); do
-        if curl -sf "http://localhost:${endpoint}" &>/dev/null; then
-            ok "$name ready → http://localhost:${endpoint%%/*}"
+        if curl -sf "http://localhost:${port}/health" &>/dev/null; then
+            ok "$name ready → http://0.0.0.0:${port}"
             break
         fi
+        [ "$i" -eq 20 ] && warn "$name chưa healthy sau 40s — xem $LOG_DIR/${name}.log"
         sleep 2
     done
 done
@@ -265,10 +292,9 @@ echo ""
 ok "=== Stack running ==="
 echo -e "  chat-bot : http://0.0.0.0:${CHAT_PORT}"
 echo -e "  stt-bot  : http://0.0.0.0:${STT_PORT}"
-echo -e "  Logs     : tail -f $LOG_DIR/chat-bot.log"
-echo -e "             tail -f $LOG_DIR/stt-bot.log"
+echo -e "  Logs     : tail -f ${LOG_DIR}/chat-bot.log"
+echo -e "             tail -f ${LOG_DIR}/stt-bot.log"
 echo ""
-info "Ctrl+C để dừng tất cả."
+info "Ctrl+C để dừng."
 
-# Giữ script sống để trap cleanup hoạt động
 wait
