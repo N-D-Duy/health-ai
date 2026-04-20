@@ -165,40 +165,42 @@ ok "Model ${CUSTOM_MODEL} đã load vào VRAM."
 # ============================================================
 info "=== [5/7] Python dependencies ==="
 
-# Helper: tạo venv + install; bỏ qua nếu requirements.txt chưa thay đổi
-setup_venv() {
-    local name="$1"
-    local venv_dir="$2"
-    local req_file="$3"
-    shift 3  # phần còn lại là extra pip args
+# ── chat-bot venv ─────────────────────────────────────────────
+CHAT_STAMP="$CHAT_ROOT/.venv/.install_stamp"
+if [ ! -d "$CHAT_ROOT/.venv" ] || [ ! -f "$CHAT_ROOT/.venv/bin/python" ]; then
+    info "Tạo venv chat-bot..."
+    "$PYTHON" -m venv "$CHAT_ROOT/.venv"
+fi
+if [ ! -f "$CHAT_STAMP" ] || [ "$CHAT_ROOT/requirements.txt" -nt "$CHAT_STAMP" ]; then
+    info "Cài chat-bot requirements..."
+    "$CHAT_ROOT/.venv/bin/python" -m pip install --quiet --upgrade pip
+    # Torch CUDA 12.4 — tương thích với driver CUDA 12.x trên RunPod
+    "$CHAT_ROOT/.venv/bin/python" -m pip install --quiet \
+        torch --index-url https://download.pytorch.org/whl/cu124
+    "$CHAT_ROOT/.venv/bin/python" -m pip install --quiet \
+        -r "$CHAT_ROOT/requirements.txt"
+    touch "$CHAT_STAMP"
+    ok "chat-bot deps OK."
+else
+    ok "chat-bot deps đã up-to-date (stamp)."
+fi
 
-    local stamp="$venv_dir/.install_stamp"
-
-    if [ ! -d "$venv_dir" ] || [ ! -f "$venv_dir/bin/python" ]; then
-        info "Tạo venv $name..."
-        "$PYTHON" -m venv "$venv_dir"
-    fi
-
-    # Chỉ reinstall khi requirements.txt mới hơn stamp
-    if [ ! -f "$stamp" ] || [ "$req_file" -nt "$stamp" ]; then
-        info "Cài $name requirements..."
-        "$venv_dir/bin/python" -m pip install --quiet --upgrade pip
-        "$venv_dir/bin/python" -m pip install --quiet "$@"
-        touch "$stamp"
-        ok "$name deps OK."
-    else
-        ok "$name deps đã up-to-date (stamp)."
-    fi
-}
-
-# chat-bot: torch CPU — tiết kiệm VRAM cho Ollama + Whisper
-setup_venv "chat-bot" "$CHAT_ROOT/.venv" "$CHAT_ROOT/requirements.txt" \
-    torch --index-url https://download.pytorch.org/whl/cpu \
-    -r "$CHAT_ROOT/requirements.txt"
-
-# stt-bot: nvidia-cublas-cu12 + nvidia-cudnn-cu12 đã có trong requirements.txt
-setup_venv "stt-bot" "$STT_ROOT/.venv" "$STT_ROOT/requirements.txt" \
-    -r "$STT_ROOT/requirements.txt"
+# ── stt-bot venv ──────────────────────────────────────────────
+STT_STAMP="$STT_ROOT/.venv/.install_stamp"
+if [ ! -d "$STT_ROOT/.venv" ] || [ ! -f "$STT_ROOT/.venv/bin/python" ]; then
+    info "Tạo venv stt-bot..."
+    "$PYTHON" -m venv "$STT_ROOT/.venv"
+fi
+if [ ! -f "$STT_STAMP" ] || [ "$STT_ROOT/requirements.txt" -nt "$STT_STAMP" ]; then
+    info "Cài stt-bot requirements..."
+    "$STT_ROOT/.venv/bin/python" -m pip install --quiet --upgrade pip
+    "$STT_ROOT/.venv/bin/python" -m pip install --quiet \
+        -r "$STT_ROOT/requirements.txt"
+    touch "$STT_STAMP"
+    ok "stt-bot deps OK."
+else
+    ok "stt-bot deps đã up-to-date (stamp)."
+fi
 
 # ============================================================
 # 6. Data directories
@@ -247,7 +249,6 @@ env \
     CHROMA_PATH="$CHROMA_DEST" \
     OLLAMA_HOST="http://localhost:11434" \
     OLLAMA_MODEL="$CUSTOM_MODEL" \
-    CUDA_VISIBLE_DEVICES="" \
     "$CHAT_ROOT/.venv/bin/uvicorn" main:app \
         --host 0.0.0.0 --port "$CHAT_PORT" \
         --app-dir "$CHAT_ROOT" \
