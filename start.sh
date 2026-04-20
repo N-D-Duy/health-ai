@@ -64,6 +64,8 @@ command -v ffmpeg  &>/dev/null || MISSING_PKGS+=(ffmpeg)
 command -v zstd    &>/dev/null || MISSING_PKGS+=(zstd)
 command -v curl    &>/dev/null || MISSING_PKGS+=(curl)
 command -v lspci   &>/dev/null || MISSING_PKGS+=(pciutils)
+# python3-venv cần cho `python -m venv` tạo được venv có pip
+"$PYTHON" -m venv --help &>/dev/null || MISSING_PKGS+=(python3-venv python3-pip)
 if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     info "Cài: ${MISSING_PKGS[*]}"
     apt-get update -qq && apt-get install -y -qq "${MISSING_PKGS[@]}"
@@ -144,27 +146,29 @@ ok "Model ${CUSTOM_MODEL} đã load vào VRAM."
 info "=== [5/7] Python dependencies ==="
 
 # chat-bot venv
-if [ ! -d "$CHAT_ROOT/.venv" ]; then
+if [ ! -d "$CHAT_ROOT/.venv" ] || [ ! -f "$CHAT_ROOT/.venv/bin/pip" ]; then
     info "Tạo venv cho chat-bot..."
     "$PYTHON" -m venv "$CHAT_ROOT/.venv"
 fi
+CHAT_PIP="$CHAT_ROOT/.venv/bin/python -m pip"
 info "Cài chat-bot requirements..."
-"$CHAT_ROOT/.venv/bin/pip" install --quiet --upgrade pip
+$CHAT_PIP install --quiet --upgrade pip
 # Cài torch CPU (chat-bot dùng embedding/reranker, Ollama lo LLM)
 # Dùng torch+cpu để tiết kiệm VRAM cho Ollama + Whisper
-"$CHAT_ROOT/.venv/bin/pip" install --quiet \
+$CHAT_PIP install --quiet \
     torch --index-url https://download.pytorch.org/whl/cpu
-"$CHAT_ROOT/.venv/bin/pip" install --quiet -r "$CHAT_ROOT/requirements.txt"
+$CHAT_PIP install --quiet -r "$CHAT_ROOT/requirements.txt"
 ok "chat-bot deps OK."
 
 # stt-bot venv
-if [ ! -d "$STT_ROOT/.venv" ]; then
+if [ ! -d "$STT_ROOT/.venv" ] || [ ! -f "$STT_ROOT/.venv/bin/pip" ]; then
     info "Tạo venv cho stt-bot..."
     "$PYTHON" -m venv "$STT_ROOT/.venv"
 fi
+STT_PIP="$STT_ROOT/.venv/bin/python -m pip"
 info "Cài stt-bot requirements..."
-"$STT_ROOT/.venv/bin/pip" install --quiet --upgrade pip
-"$STT_ROOT/.venv/bin/pip" install --quiet -r "$STT_ROOT/requirements.txt"
+$STT_PIP install --quiet --upgrade pip
+$STT_PIP install --quiet -r "$STT_ROOT/requirements.txt"
 ok "stt-bot deps OK."
 
 # ============================================================
