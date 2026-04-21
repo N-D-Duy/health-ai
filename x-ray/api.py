@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import base64
+import io
 import os
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from openai import AzureOpenAI
 from PIL import Image
 from pydantic import BaseModel
-import io
 
-from configs import GENERATION_CONFIG, MODEL_NAME, SAFETY_SETTINGS, SYSTEM_PROMPT
+from configs import MAX_TOKENS, MODEL_NAME, SYSTEM_PROMPT, TEMPERATURE
 
 load_dotenv(override=False)
 
-genai.configure(api_key=os.getenv("YOUR_GOOGLE_GEMINI_API", ""))
+_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", MODEL_NAME)
+
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+)
 
 app = FastAPI(title="xray-analyzer", version="0.1.0")
 
@@ -36,7 +43,7 @@ class AnalyzeResponse(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model": MODEL_NAME}
+    return {"status": "ok", "model": _deployment}
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -50,34 +57,48 @@ async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
     except Exception:
         raise HTTPException(status_code=400, detail="Cannot read image file.")
 
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        safety_settings=SAFETY_SETTINGS,
-        generation_config=GENERATION_CONFIG,
-        system_instruction=SYSTEM_PROMPT,
-    )
+    # Resize về tối đa 1024x1024 trước khi encode
+    image.thumbnail((1024, 1024), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    image.save(buf, format=image.format or "JPEG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    mime = file.content_type or "image/jpeg"
 
     try:
-        response = model.generate_content(["Analyze this image.", image])
+        response = client.chat.completions.create(
+            model=_deployment,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Analyze this x-ray image."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    ],
+                },
+            ],
+            max_completion_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE,
+        )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gemini API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Azure OpenAI error: {e}")
 
-    candidate = response.candidates[0] if response.candidates else None
-    analysis = response.text or ""
-    finish_reason = str(candidate.finish_reason) if candidate else None
+    choice = response.choices[0]
+    analysis = choice.message.content or ""
+    finish_reason = str(choice.finish_reason) if choice.finish_reason else None
 
     usage = None
-    if hasattr(response, "usage_metadata") and response.usage_metadata:
-        m = response.usage_metadata
+    if response.usage:
         usage = {
-            "prompt_token_count": getattr(m, "prompt_token_count", None),
-            "candidates_token_count": getattr(m, "candidates_token_count", None),
-            "total_token_count": getattr(m, "total_token_count", None),
+            "prompt_token_count": response.usage.prompt_tokens,
+            "candidates_token_count": response.usage.completion_tokens,
+            "total_token_count": response.usage.total_tokens,
         }
 
     return AnalyzeResponse(
         analysis=analysis,
-        model=MODEL_NAME,
+        model=_deployment,
         finish_reason=finish_reason,
         usage=usage,
     )

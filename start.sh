@@ -27,6 +27,11 @@ WHISPER_SIZE="${WHISPER_SIZE:-medium}"
 CHAT_PORT="${CHAT_PORT:-8000}"
 STT_PORT="${STT_PORT:-8010}"
 WORKSPACE="${WORKSPACE:-/workspace}"
+VPS_REGISTER_URL="${VPS_REGISTER_URL:-https://son.ndwcdy.me/internal/register}"
+VPS_HEARTBEAT_URL="${VPS_HEARTBEAT_URL:-https://son.ndwcdy.me/internal/heartbeat}"
+SERVICE_TOKEN="${SERVICE_TOKEN:-your_secret}"
+# Thêm dòng này vào ngay sau:
+[ "$SERVICE_TOKEN" = "your_secret" ] && die "SERVICE_TOKEN chưa được set!"
 
 PID_DIR="$ROOT/.pids"
 LOG_DIR="$ROOT/.logs"
@@ -289,10 +294,74 @@ for entry in "chat-bot:${CHAT_PORT}" "stt-bot:${STT_PORT}"; do
     done
 done
 
+POD_ID="${RUNPOD_POD_ID:-unknown}"
+
+CHAT_URL="https://${POD_ID}-${CHAT_PORT}.proxy.runpod.net"
+STT_URL="https://${POD_ID}-${STT_PORT}.proxy.runpod.net"
+
+
+register_service() {
+  local name=$1
+  local url=$2
+  info "Register $name → $url"
+
+  for i in {1..10}; do
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$VPS_REGISTER_URL" \
+      -H "Authorization: Bearer $SERVICE_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"service\":\"$name\",\"url\":\"$url\"}")
+
+    if [[ "$http_code" =~ ^2 ]]; then
+      ok "$name registered (HTTP $http_code)"
+      return 0
+    fi
+
+    warn "Register $name failed (HTTP $http_code), retry $i/10..."
+    sleep $((3 * i))
+  done
+
+  warn "Register $name failed after 10 retries"
+  return 1
+}
+
+heartbeat_loop() {
+  local fail_count=0
+  local max_fail=5
+
+  while true; do
+    local chat_ok stt_ok
+    curl -sf "http://localhost:${CHAT_PORT}/health" &>/dev/null && chat_ok=true || chat_ok=false
+    curl -sf "http://localhost:${STT_PORT}/health"  &>/dev/null && stt_ok=true  || stt_ok=false
+
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$VPS_HEARTBEAT_URL" \
+      -H "Authorization: Bearer $SERVICE_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"pod_id\":\"$POD_ID\",\"services\":{\"chat\":$chat_ok,\"stt\":$stt_ok}}")
+
+    if [[ "$http_code" =~ ^2 ]]; then
+      fail_count=0
+    else
+      fail_count=$((fail_count + 1))
+      warn "Heartbeat failed (HTTP $http_code) — $fail_count/$max_fail"
+
+      if [ "$fail_count" -ge "$max_fail" ]; then
+        warn "VPS có thể đã restart, re-registering..."
+        register_service "chat" "$CHAT_URL"
+        register_service "stt"  "$STT_URL"
+        fail_count=0
+      fi
+    fi
+
+    sleep 30
+  done
+}
+
 echo ""
 ok "=== Stack running ==="
-echo -e "  chat-bot : http://0.0.0.0:${CHAT_PORT}"
-echo -e "  stt-bot  : http://0.0.0.0:${STT_PORT}"
+echo -e "  chat-bot : $CHAT_URL"
+echo -e "  stt-bot  : $STT_URL"
 echo -e "  Logs     : tail -f ${LOG_DIR}/chat-bot.log"
 echo -e "             tail -f ${LOG_DIR}/stt-bot.log"
 echo ""
